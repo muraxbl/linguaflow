@@ -11,6 +11,9 @@ use LinguaFlowAI\Provider\ProviderFactory;
 use LinguaFlowAI\Queue\JobRepository;
 use LinguaFlowAI\Queue\Worker;
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Translation\ProductTranslationService;
+use LinguaFlowAI\Translation\ProductWriter;
+use LinguaFlowAI\Translation\TranslationMemory;
 
 /**
  * Catalog > LinguaFlow AI: batch dashboard, mass translation form and the AJAX endpoints
@@ -20,6 +23,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
 {
     /** Seconds a back office tick may spend translating before answering. */
     private const TICK_BUDGET = 20;
+    private const REVIEW_PAGE_SIZE = 20;
 
     /** @var LinguaFlowAI */
     public $module;
@@ -33,11 +37,16 @@ class AdminLinguaFlowAIController extends ModuleAdminController
     public function initContent()
     {
         parent::initContent();
+        if (Tools::getValue('view') === 'review') {
+            $this->renderReview();
+
+            return;
+        }
         $jobs = new JobRepository();
         $viewJob = (int) Tools::getValue('view_job');
         $jobList = $jobs->listJobs();
         foreach ($jobList as &$job) {
-            $job['pct'] = $job['total'] > 0 ? (int) round(((int) $job['done'] + (int) $job['failed']) * 100 / (int) $job['total']) : 0;
+            $job['pct'] = $job['total'] > 0 ? (int) round(((int) $job['done'] + (int) $job['failed'] + (int) $job['review']) * 100 / (int) $job['total']) : 0;
         }
         unset($job);
 
@@ -54,6 +63,8 @@ class AdminLinguaFlowAIController extends ModuleAdminController
             'lfai_provider_label' => ProviderConfig::LABELS[(string) Settings::get(Settings::PROVIDER)] ?? '',
             'lfai_model' => (string) Settings::get(Settings::MODEL),
             'lfai_bo_worker' => (bool) Settings::get(Settings::BO_WORKER),
+            'lfai_review_count' => $jobs->countReview(),
+            'lfai_glossary_url' => $this->context->link->getAdminLink(LinguaFlowAI::GLOSSARY_CONTROLLER),
         ]);
         $this->content .= $this->context->smarty->fetch($this->module->getLocalPath() . 'views/templates/admin/dashboard.tpl');
         $this->context->smarty->assign('content', $this->content);
@@ -75,9 +86,93 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         } elseif (Tools::isSubmit('submitLfaiDelete') && $idJob) {
             $jobs->deleteJob($idJob);
             $this->confirmations[] = $this->module->l('Job deleted.', 'adminlinguaflowaicontroller');
+        } elseif (Tools::isSubmit('submitLfaiApprove')) {
+            $this->approveReviewItem((int) Tools::getValue('id_item'));
+        } elseif (Tools::isSubmit('submitLfaiRegenerate')) {
+            $jobs->requeue((int) Tools::getValue('id_item'));
+            $this->confirmations[] = $this->module->l('Queued to be translated again (ignoring the memory).', 'adminlinguaflowaicontroller');
+        } elseif (Tools::isSubmit('submitLfaiReject')) {
+            $item = $jobs->getItem((int) Tools::getValue('id_item'));
+            if ($item && $item['status'] === JobRepository::ITEM_REVIEW) {
+                $jobs->markDone($item, JobRepository::ITEM_SKIPPED, 'Rejected in review');
+                $jobs->refreshCounters((int) $item['id_job']);
+                $this->confirmations[] = $this->module->l('Translation discarded.', 'adminlinguaflowaicontroller');
+            }
         }
 
         return parent::postProcess();
+    }
+
+    private function renderReview(): void
+    {
+        $jobs = new JobRepository();
+        $page = max(1, (int) Tools::getValue('page'));
+        $total = $jobs->countReview();
+        $items = $jobs->reviewItems(self::REVIEW_PAGE_SIZE, ($page - 1) * self::REVIEW_PAGE_SIZE);
+        $labels = $this->module->fieldLabels();
+        foreach ($items as &$item) {
+            $product = new Product((int) $item['id_product'], false, (int) $this->context->language->id);
+            $item['product_name'] = $product->name;
+            $item['product_url'] = $this->context->link->getAdminLink('AdminProducts', true, ['id_product' => (int) $item['id_product']], ['id_product' => (int) $item['id_product'], 'updateproduct' => 1]);
+            foreach ($item['payload']['fields'] ?? [] as $field => &$data) {
+                $data['label'] = $labels[$field] ?? $field;
+                $data['html'] = in_array($field, ['description', 'description_short'], true);
+            }
+        }
+        unset($item, $data);
+
+        $this->context->smarty->assign([
+            'lfai_url' => $this->context->link->getAdminLink($this->controller_name),
+            'lfai_items' => $items,
+            'lfai_total' => $total,
+            'lfai_page' => $page,
+            'lfai_pages' => max(1, (int) ceil($total / self::REVIEW_PAGE_SIZE)),
+        ]);
+        $this->content .= $this->context->smarty->fetch($this->module->getLocalPath() . 'views/templates/admin/review.tpl');
+        $this->context->smarty->assign('content', $this->content);
+    }
+
+    /**
+     * Writes the (possibly edited) translation to the product and stores it as approved in the memory,
+     * so the same text is never sent to the model again.
+     */
+    private function approveReviewItem(int $idItem): void
+    {
+        $jobs = new JobRepository();
+        $item = $jobs->getItem($idItem);
+        if (!$item || $item['status'] !== JobRepository::ITEM_REVIEW) {
+            $this->errors[] = $this->module->l('This translation is no longer waiting for review.', 'adminlinguaflowaicontroller');
+
+            return;
+        }
+        $job = $jobs->getJob((int) $item['id_job']);
+        $edited = (array) Tools::getValue('outputs', []);
+        $fields = $item['payload']['fields'] ?? [];
+        $outputs = [];
+        foreach ($fields as $field => $data) {
+            $outputs[$field] = isset($edited[$field]) ? trim((string) $edited[$field]) : (string) $data['output'];
+        }
+        $outputs = array_filter($outputs, 'strlen');
+
+        $idSourceLang = (int) ($item['payload']['source_lang'] ?? Settings::sourceLanguageId());
+        (new ProductWriter())->write(
+            (int) $item['id_product'],
+            $idSourceLang,
+            (int) $item['id_lang'],
+            (int) ($item['payload']['id_shop'] ?? $this->context->shop->id),
+            $outputs,
+            $job['options'] ?? []
+        );
+
+        $memory = new TranslationMemory();
+        $code = Worker::languageCode((int) $item['id_lang']);
+        foreach ($outputs as $field => $output) {
+            $memory->approve($code, ProductTranslationService::FIELD_TYPES[$field], (string) $fields[$field]['source'], $output);
+        }
+
+        $jobs->markDone($item, JobRepository::ITEM_DONE, 'Approved in review');
+        $jobs->refreshCounters((int) $item['id_job']);
+        $this->confirmations[] = $this->module->l('Translation approved, saved to the product and to the translation memory.', 'adminlinguaflowaicontroller');
     }
 
     private function createJobFromForm(): void
@@ -187,6 +282,8 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         $this->json([
             'ok' => true,
             'due' => $jobs->countDue(),
+            'review' => $jobs->countReview(),
+            'reviewUrl' => $this->context->link->getAdminLink($this->controller_name) . '&view=review',
             'active' => $jobs->activeJobs(),
             'completed' => $jobs->pullCompletedNotices((int) $this->context->employee->id),
         ]);

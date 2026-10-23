@@ -10,8 +10,15 @@ namespace LinguaFlowAI\Queue;
 use LinguaFlowAI\Provider\ProviderException;
 use LinguaFlowAI\Provider\ProviderFactory;
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Translation\GlossaryMatcher;
+use LinguaFlowAI\Translation\GlossaryRepository;
+use LinguaFlowAI\Translation\LanguageInfo;
 use LinguaFlowAI\Translation\ProductTranslationService;
-use LinguaFlowAI\Translation\Translator;
+use LinguaFlowAI\Translation\ProductWriter;
+use LinguaFlowAI\Translation\PromptBuilder;
+use LinguaFlowAI\Translation\ProtectedTerms;
+use LinguaFlowAI\Translation\SegmentTranslator;
+use LinguaFlowAI\Translation\TranslationMemory;
 
 /**
  * Processes the queue a few items at a time. Called by the back office poller and by the cron URL;
@@ -25,18 +32,38 @@ class Worker
 
     /** @var JobRepository */
     private $jobs;
+    /** @var ProductWriter */
+    private $writer;
 
     public function __construct(?JobRepository $jobs = null)
     {
         $this->jobs = $jobs ?: new JobRepository();
+        $this->writer = new ProductWriter();
+    }
+
+    /** Translation pipeline wired with the module settings, glossary and memory. */
+    public static function buildService(): ProductTranslationService
+    {
+        $config = Settings::providerConfig();
+        $memory = new TranslationMemory();
+        $translator = new SegmentTranslator(
+            ProviderFactory::create($config),
+            $config->model,
+            new PromptBuilder(Settings::languageStyles(), (string) Settings::get(Settings::INSTRUCTIONS)),
+            new GlossaryMatcher((new GlossaryRepository())->all()),
+            new ProtectedTerms(Settings::doNotTranslate(), Settings::protectedPatterns()),
+            $memory
+        );
+
+        return new ProductTranslationService($translator, $memory);
     }
 
     /**
-     * @return array{processed: int, translated: int, failed: int, locked: bool, completed: int[]}
+     * @return array{processed: int, translated: int, review: int, failed: int, locked: bool, completed: int[]}
      */
     public function run(int $maxItems, int $timeBudgetSeconds): array
     {
-        $stats = ['processed' => 0, 'translated' => 0, 'failed' => 0, 'locked' => false, 'completed' => []];
+        $stats = ['processed' => 0, 'translated' => 0, 'review' => 0, 'failed' => 0, 'locked' => false, 'completed' => []];
         $db = \Db::getInstance();
         if ((int) $db->getValue("SELECT GET_LOCK('" . self::LOCK . "', 0)") !== 1) {
             $stats['locked'] = true;
@@ -50,12 +77,9 @@ class Worker
                 return $stats;
             }
 
-            @set_time_limit(max(60, $timeBudgetSeconds + 150));
-            $service = new ProductTranslationService(new Translator(
-                ProviderFactory::create(Settings::providerConfig()),
-                (string) Settings::get(Settings::INSTRUCTIONS),
-                Settings::doNotTranslate()
-            ));
+            // A long description is many model calls: give the request room beyond the budget.
+            @set_time_limit(max(120, $timeBudgetSeconds + 600));
+            $service = self::buildService();
 
             $deadline = microtime(true) + $timeBudgetSeconds;
             while ($stats['processed'] < $maxItems && microtime(true) < $deadline) {
@@ -86,42 +110,60 @@ class Worker
     {
         $job = $this->jobs->getJob((int) $item['id_job']);
         $options = $job['options'] ?? [];
+        $payload = json_decode((string) $item['payload'], true) ?: [];
+        $idSourceLang = (int) ($options['source_lang'] ?? Settings::sourceLanguageId());
+        $idShop = (int) ($job['id_shop'] ?? \Configuration::get('PS_SHOP_DEFAULT'));
 
         try {
-            $result = $service->translate(
+            $outcome = $service->translate(
                 (int) $item['id_product'],
-                (int) ($options['source_lang'] ?? Settings::sourceLanguageId()),
+                $idSourceLang,
                 (int) $item['id_lang'],
-                (int) ($job['id_shop'] ?? \Configuration::get('PS_SHOP_DEFAULT')),
-                $options
+                $idShop,
+                $options,
+                !empty($payload['regenerate'])
             );
+
+            if ($outcome['result'] === ProductTranslationService::RESULT_TRANSLATED) {
+                if ($outcome['has_issues']) {
+                    // Held back: nothing is written until someone approves it in the review screen.
+                    $this->jobs->markReview($item, ['source_lang' => $idSourceLang, 'id_shop' => $idShop, 'fields' => $outcome['fields']]);
+                    ++$stats['review'];
+                } else {
+                    $this->writer->write((int) $item['id_product'], $idSourceLang, (int) $item['id_lang'], $idShop, self::outputs($outcome['fields']), $options);
+                    $this->jobs->markDone($item);
+                    ++$stats['translated'];
+                }
+            } elseif ($outcome['result'] === ProductTranslationService::RESULT_NOTHING_TO_DO) {
+                $this->jobs->markDone($item, JobRepository::ITEM_SKIPPED, 'Already translated');
+            } elseif ((int) $item['attempts'] < JobRepository::MAX_ATTEMPTS) {
+                // Brand new products may still be empty while the merchant fills them in.
+                \Db::getInstance()->update('linguaflowai_item', [
+                    'status' => JobRepository::ITEM_PENDING,
+                    'available_at' => date('Y-m-d H:i:s', time() + self::NO_SOURCE_RETRY_SECONDS),
+                    'error' => 'Waiting for source content',
+                ], 'id_item = ' . (int) $item['id_item']);
+            } else {
+                $this->jobs->markDone($item, JobRepository::ITEM_SKIPPED, 'Product has no name in the source language');
+            }
         } catch (ProviderException $e) {
             $this->jobs->markFailed($item, $e->getMessage(), $e->isRetryable());
             ++$stats['failed'];
-
-            return;
         } catch (\Throwable $e) {
             $this->jobs->markFailed($item, get_class($e) . ': ' . $e->getMessage(), false);
             ++$stats['failed'];
+        }
+    }
 
-            return;
+    /** @return array<string, string> field => translated text */
+    public static function outputs(array $fields): array
+    {
+        $outputs = [];
+        foreach ($fields as $field => $data) {
+            $outputs[$field] = (string) $data['output'];
         }
 
-        if ($result === ProductTranslationService::RESULT_TRANSLATED) {
-            $this->jobs->markDone($item);
-            ++$stats['translated'];
-        } elseif ($result === ProductTranslationService::RESULT_NOTHING_TO_DO) {
-            $this->jobs->markDone($item, JobRepository::ITEM_SKIPPED, 'Already translated');
-        } elseif ((int) $item['attempts'] < JobRepository::MAX_ATTEMPTS) {
-            // Brand new products may still be empty while the merchant fills them in.
-            \Db::getInstance()->update('linguaflowai_item', [
-                'status' => JobRepository::ITEM_PENDING,
-                'available_at' => date('Y-m-d H:i:s', time() + self::NO_SOURCE_RETRY_SECONDS),
-                'error' => 'Waiting for source content',
-            ], 'id_item = ' . (int) $item['id_item']);
-        } else {
-            $this->jobs->markDone($item, JobRepository::ITEM_SKIPPED, 'Product has no name in the source language');
-        }
+        return $outputs;
     }
 
     /**
@@ -132,12 +174,20 @@ class Worker
     {
         $job = $this->jobs->getJob($idJob);
         \PrestaShopLogger::addLog(
-            sprintf('LinguaFlow AI: job #%d completed (%d translated, %d failed).', $idJob, $job['done'] ?? 0, $job['failed'] ?? 0),
+            sprintf('LinguaFlow AI: job #%d completed (%d translated, %d to review, %d failed).', $idJob, $job['done'] ?? 0, $job['review'] ?? 0, $job['failed'] ?? 0),
             1,
             null,
             'linguaflowai',
             $idJob
         );
         \Hook::exec('actionLinguaFlowAIJobCompleted', ['id_job' => $idJob, 'job' => $job]);
+    }
+
+    /** Language code of a PrestaShop language, as used by the glossary and the memory. */
+    public static function languageCode(int $idLang): string
+    {
+        $lang = new \Language($idLang);
+
+        return LanguageInfo::code((string) $lang->iso_code, (string) $lang->language_code);
     }
 }

@@ -25,7 +25,6 @@ class ComposerStaticInit5c42bf7adc829848dbec18663b599700
         'LinguaFlowAI\\Controller\\Admin\\BulkTranslateController' => __DIR__ . '/../..' . '/src/Controller/Admin/BulkTranslateController.php',
         'LinguaFlowAI\\Provider\\AnthropicProvider' => __DIR__ . '/../..' . '/src/Provider/AnthropicProvider.php',
         'LinguaFlowAI\\Provider\\HttpJsonClient' => __DIR__ . '/../..' . '/src/Provider/HttpJsonClient.php',
-        'LinguaFlowAI\\Provider\\JsonExtractor' => __DIR__ . '/../..' . '/src/Provider/JsonExtractor.php',
         'LinguaFlowAI\\Provider\\OllamaProvider' => __DIR__ . '/../..' . '/src/Provider/OllamaProvider.php',
         'LinguaFlowAI\\Provider\\OpenAiProvider' => __DIR__ . '/../..' . '/src/Provider/OpenAiProvider.php',
         'LinguaFlowAI\\Provider\\ProviderConfig' => __DIR__ . '/../..' . '/src/Provider/ProviderConfig.php',
@@ -35,8 +34,19 @@ class ComposerStaticInit5c42bf7adc829848dbec18663b599700
         'LinguaFlowAI\\Queue\\JobRepository' => __DIR__ . '/../..' . '/src/Queue/JobRepository.php',
         'LinguaFlowAI\\Queue\\Worker' => __DIR__ . '/../..' . '/src/Queue/Worker.php',
         'LinguaFlowAI\\Settings' => __DIR__ . '/../..' . '/src/Settings.php',
+        'LinguaFlowAI\\Translation\\GlossaryMatcher' => __DIR__ . '/../..' . '/src/Translation/GlossaryMatcher.php',
+        'LinguaFlowAI\\Translation\\GlossaryRepository' => __DIR__ . '/../..' . '/src/Translation/GlossaryRepository.php',
+        'LinguaFlowAI\\Translation\\Html' => __DIR__ . '/../..' . '/src/Translation/Html.php',
+        'LinguaFlowAI\\Translation\\LanguageInfo' => __DIR__ . '/../..' . '/src/Translation/LanguageInfo.php',
+        'LinguaFlowAI\\Translation\\MemoryInterface' => __DIR__ . '/../..' . '/src/Translation/MemoryInterface.php',
         'LinguaFlowAI\\Translation\\ProductTranslationService' => __DIR__ . '/../..' . '/src/Translation/ProductTranslationService.php',
-        'LinguaFlowAI\\Translation\\Translator' => __DIR__ . '/../..' . '/src/Translation/Translator.php',
+        'LinguaFlowAI\\Translation\\ProductWriter' => __DIR__ . '/../..' . '/src/Translation/ProductWriter.php',
+        'LinguaFlowAI\\Translation\\PromptBuilder' => __DIR__ . '/../..' . '/src/Translation/PromptBuilder.php',
+        'LinguaFlowAI\\Translation\\ProtectedTerms' => __DIR__ . '/../..' . '/src/Translation/ProtectedTerms.php',
+        'LinguaFlowAI\\Translation\\QualityCheck' => __DIR__ . '/../..' . '/src/Translation/QualityCheck.php',
+        'LinguaFlowAI\\Translation\\RetryException' => __DIR__ . '/../..' . '/src/Translation/RetryException.php',
+        'LinguaFlowAI\\Translation\\SegmentTranslator' => __DIR__ . '/../..' . '/src/Translation/SegmentTranslator.php',
+        'LinguaFlowAI\\Translation\\TranslationMemory' => __DIR__ . '/../..' . '/src/Translation/TranslationMemory.php',
     );
 
     public static function getInitializer(ClassLoader $loader)

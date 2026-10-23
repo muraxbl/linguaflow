@@ -10,7 +10,8 @@ namespace LinguaFlowAI\Translation;
 use LinguaFlowAI\Settings;
 
 /**
- * Translates one product into one language and writes the result to product_lang.
+ * Translates the fields of one product into one language. Fields go in order: the name first, which is then
+ * given as context to the other fields and reused for "Name | Brand" meta titles.
  */
 class ProductTranslationService
 {
@@ -18,118 +19,159 @@ class ProductTranslationService
     public const RESULT_NOTHING_TO_DO = 'nothing';
     public const RESULT_NO_SOURCE = 'no_source';
 
-    /** @var Translator */
-    private $translator;
+    /** PrestaShop field => field type used by the prompt, the checks and the memory. */
+    public const FIELD_TYPES = [
+        'name' => 'Name',
+        'description_short' => 'Description',
+        'description' => 'Description',
+        'meta_title' => 'Meta title',
+        'meta_description' => 'Meta description',
+        'available_now' => 'Label',
+        'available_later' => 'Label',
+        'delivery_in_stock' => 'Label',
+        'delivery_out_stock' => 'Label',
+    ];
 
-    public function __construct(Translator $translator)
+    /** @var SegmentTranslator */
+    private $translator;
+    /** @var MemoryInterface */
+    private $memory;
+
+    public function __construct(SegmentTranslator $translator, MemoryInterface $memory)
     {
         $this->translator = $translator;
+        $this->memory = $memory;
     }
 
     /**
-     * @param array $options job options: fields (string[]), overwrite (bool), slug (bool)
+     * @param array $options job options: fields (string[]), overwrite (bool)
      *
-     * @return string one of the RESULT_* constants
+     * @return array{result: string, fields: array<string, array{source: string, output: string, issues: string[], from: string}>, has_issues: bool}
      */
-    public function translate(int $idProduct, int $idSourceLang, int $idTargetLang, int $idShop, array $options): string
+    public function translate(int $idProduct, int $idSourceLang, int $idTargetLang, int $idShop, array $options, bool $noCache = false): array
     {
-        $fields = array_values(array_intersect($options['fields'] ?? Settings::fields(), array_keys(Settings::PRODUCT_FIELDS)));
+        $empty = ['fields' => [], 'has_issues' => false];
+        $fields = array_values(array_intersect(array_keys(Settings::PRODUCT_FIELDS), $options['fields'] ?? Settings::fields()));
         $overwrite = !empty($options['overwrite']);
-        $regenerateSlug = !isset($options['slug']) || !empty($options['slug']);
 
-        $source = $this->loadLangRow($idProduct, $idSourceLang, $idShop);
+        $source = ProductWriter::loadLangRow($idProduct, $idSourceLang, $idShop);
         if (!$source || trim((string) $source['name']) === '') {
-            return self::RESULT_NO_SOURCE;
+            return ['result' => self::RESULT_NO_SOURCE] + $empty;
         }
-        $target = $this->loadLangRow($idProduct, $idTargetLang, $idShop) ?: [];
+        $target = ProductWriter::loadLangRow($idProduct, $idTargetLang, $idShop) ?: [];
 
         $toTranslate = [];
-        $maxLength = [];
         foreach ($fields as $field) {
             $sourceText = trim((string) ($source[$field] ?? ''));
-            if ($sourceText === '' || trim(strip_tags($sourceText)) === '') {
+            if ($sourceText === '' || !Html::hasLetters($sourceText)) {
                 continue;
             }
             $targetText = trim((string) ($target[$field] ?? ''));
             // PrestaShop copies the source text into every language on creation: treat that as untranslated.
             if ($overwrite || $targetText === '' || $targetText === $sourceText) {
                 $toTranslate[$field] = $sourceText;
-                if (Settings::PRODUCT_FIELDS[$field] > 0) {
-                    $maxLength[$field] = Settings::PRODUCT_FIELDS[$field];
-                }
             }
         }
-        if ($toTranslate === []) {
-            return self::RESULT_NOTHING_TO_DO;
+        if (!$toTranslate) {
+            return ['result' => self::RESULT_NOTHING_TO_DO] + $empty;
         }
 
         $sourceLang = new \Language($idSourceLang);
         $targetLang = new \Language($idTargetLang);
-        $translated = $this->translator->translate(
-            $toTranslate,
-            $sourceLang->name,
-            $targetLang->name,
-            $targetLang->locale ?: $targetLang->iso_code,
-            $maxLength
-        );
+        $sourceCode = LanguageInfo::code((string) $sourceLang->iso_code, (string) $sourceLang->language_code);
+        $targetCode = LanguageInfo::code((string) $targetLang->iso_code, (string) $targetLang->language_code);
+        $product = new \Product($idProduct, false, null, $idShop);
+        $this->translator->setProtectedTerms($this->protectedTermsFor($product));
 
-        $update = [];
-        foreach ($translated as $field => $value) {
-            $update[$field] = pSQL($value, true);
-        }
-        if ($regenerateSlug && isset($translated['name'])) {
-            $currentSlug = (string) ($target['link_rewrite'] ?? '');
-            if ($overwrite || $currentSlug === '' || $currentSlug === (string) $source['link_rewrite']) {
-                $slug = \Tools::str2url($translated['name']);
-                if ($slug !== '') {
-                    $update['link_rewrite'] = pSQL($slug);
-                }
-            }
-        }
+        $sourceName = trim((string) $source['name']);
+        $translatedName = trim((string) ($target['name'] ?? ''));
+        $nameContext = $translatedName !== '' && $translatedName !== $sourceName ? ['source' => $sourceName, 'translated' => $translatedName] : null;
 
-        $this->write($idProduct, $idTargetLang, $update);
+        $job = [
+            'sourceName' => LanguageInfo::name($sourceCode, (string) $sourceLang->name),
+            'sourceCode' => $sourceCode,
+            'langName' => LanguageInfo::name($targetCode, (string) $targetLang->name),
+            'langCode' => $targetCode,
+            'categoryHint' => $this->categoryHint((int) $product->id_category_default),
+            'noCache' => $noCache,
+        ];
 
-        return self::RESULT_TRANSLATED;
-    }
+        $results = [];
+        $hasIssues = false;
+        foreach ($toTranslate as $field => $text) {
+            $type = self::FIELD_TYPES[$field];
+            $fieldJob = $job + ['field' => $type, 'nameContext' => $field === 'name' ? null : $nameContext];
+            $notes = [];
+            $from = 'model';
+            $approved = $noCache ? null : $this->memory->get(SegmentTranslator::approvedKey($targetCode, $type, Html::tidyInline(Html::decodeEntities($text))));
+            $brandSplit = $type === 'Meta title' ? self::splitBrandSuffix($text) : null;
 
-    private function loadLangRow(int $idProduct, int $idLang, int $idShop): ?array
-    {
-        $row = \Db::getInstance()->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'product_lang`
-            WHERE id_product = ' . $idProduct . ' AND id_lang = ' . $idLang . ' AND id_shop = ' . $idShop, false);
-        if (!$row && $idShop !== (int) \Configuration::get('PS_SHOP_DEFAULT')) {
-            return $this->loadLangRow($idProduct, $idLang, (int) \Configuration::get('PS_SHOP_DEFAULT'));
-        }
-
-        return $row ?: null;
-    }
-
-    /**
-     * Writes the translation to every shop the product belongs to, then lets PrestaShop
-     * and other modules refresh caches and the search index.
-     */
-    private function write(int $idProduct, int $idLang, array $update): void
-    {
-        $db = \Db::getInstance();
-        $shopIds = array_map('intval', array_column($db->executeS('SELECT id_shop FROM `' . _DB_PREFIX_ . 'product_shop` WHERE id_product = ' . $idProduct) ?: [], 'id_shop'));
-
-        foreach ($shopIds as $idShop) {
-            $exists = (int) $db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'product_lang` WHERE id_product = ' . $idProduct . ' AND id_lang = ' . $idLang . ' AND id_shop = ' . $idShop);
-            if ($exists) {
-                $db->update('product_lang', $update, 'id_product = ' . $idProduct . ' AND id_lang = ' . $idLang . ' AND id_shop = ' . $idShop);
+            if ($approved !== null) {
+                // Approved in an earlier review: it has priority and needs no checks.
+                $output = $approved;
+                $from = 'memory';
+            } elseif ($brandSplit && $nameContext && self::normalize($brandSplit[0]) === self::normalize($sourceName)) {
+                // "Name | Brand" with the same name: reuse the translated name, no model call.
+                $output = $nameContext['translated'] . ' | ' . $brandSplit[1];
+                $from = 'name';
+            } elseif ($brandSplit) {
+                $output = $this->translator->translateText($brandSplit[0], $fieldJob, $notes) . ' | ' . $brandSplit[1];
             } else {
-                $db->insert('product_lang', array_merge($update, ['id_product' => $idProduct, 'id_lang' => $idLang, 'id_shop' => $idShop]));
+                $output = $this->translator->translateText($text, $fieldJob, $notes);
+            }
+
+            $issues = $from === 'memory' ? [] : array_merge(
+                $notes,
+                QualityCheck::issues($text, $output, $type, $sourceCode, $targetCode, $this->translator->glossary())
+            );
+            $max = Settings::PRODUCT_FIELDS[$field];
+            if ($max > 0 && mb_strlen($output) > $max) {
+                $issues[] = sprintf('longer than PrestaShop allows (%d / %d characters)', mb_strlen($output), $max);
+            }
+
+            $results[$field] = ['source' => $text, 'output' => $output, 'issues' => $issues, 'from' => $from];
+            $hasIssues = $hasIssues || $issues !== [];
+            if ($field === 'name' && $output !== '') {
+                $nameContext = ['source' => $sourceName, 'translated' => $output];
             }
         }
 
-        $db->update('product', ['date_upd' => date('Y-m-d H:i:s')], 'id_product = ' . $idProduct);
-        \Cache::clean('Product::*');
-        if (method_exists('Product', 'resetStaticCache')) {
-            \Product::resetStaticCache();
-        }
-        \Search::indexation(false, $idProduct);
+        return ['result' => self::RESULT_TRANSLATED, 'fields' => $results, 'has_issues' => $hasIssues];
+    }
 
-        $product = new \Product($idProduct);
-        \Hook::exec('actionLinguaFlowAIProductTranslated', ['id_product' => $idProduct, 'id_lang' => $idLang, 'product' => $product]);
-        \Hook::exec('actionProductUpdate', ['id_product' => $idProduct, 'product' => $product]);
+    /** Configured brands and patterns, plus the product's own manufacturer. */
+    private function protectedTermsFor(\Product $product): ProtectedTerms
+    {
+        $brands = Settings::doNotTranslate();
+        if (Settings::get(Settings::PROTECT_MANUFACTURERS) && $product->id_manufacturer) {
+            $brands[] = (string) \Manufacturer::getNameById((int) $product->id_manufacturer);
+        }
+
+        return new ProtectedTerms($brands, Settings::protectedPatterns());
+    }
+
+    /** Hint of the default category, or of its closest parent that has one. */
+    private function categoryHint(int $idCategory): string
+    {
+        $hints = Settings::categoryHints();
+        for ($depth = 0; $idCategory > 0 && $depth < 15; ++$depth) {
+            if (!empty($hints[$idCategory])) {
+                return (string) $hints[$idCategory];
+            }
+            $idCategory = (int) \Db::getInstance()->getValue('SELECT id_parent FROM `' . _DB_PREFIX_ . 'category` WHERE id_category = ' . $idCategory);
+        }
+
+        return '';
+    }
+
+    /** Splits "Product name | Brand" into name and brand. */
+    private static function splitBrandSuffix(string $text): ?array
+    {
+        return preg_match('/^(.*\S)\s*\|\s*([^|]{1,40})$/u', $text, $m) ? [$m[1], trim($m[2])] : null;
+    }
+
+    private static function normalize(string $text): string
+    {
+        return mb_strtolower(trim(preg_replace('/\s+/u', ' ', $text)));
     }
 }

@@ -94,15 +94,29 @@
     var message = format(cfg.i18n.completedBody, {
       label: job.label,
       done: job.done,
+      review: job.review || 0,
       failed: job.failed
     });
-    toast(cfg.i18n.completedTitle, message, parseInt(job.failed, 10) > 0 ? 'warning' : 'success');
+    var attention = parseInt(job.failed, 10) > 0 || parseInt(job.review, 10) > 0;
+    toast(cfg.i18n.completedTitle, message, attention ? 'warning' : 'success');
     nativeNotification(cfg.i18n.completedTitle, message);
   }
 
   /* ---------------------------------------------------------- progress pill */
 
-  function renderProgress(active) {
+  function renderProgress(active, review, reviewUrl) {
+    if (!active.length && review > 0) {
+      if (!pill) {
+        pill = document.createElement('a');
+        pill.className = 'lfai-pill';
+        document.body.appendChild(pill);
+      }
+      pill.href = reviewUrl;
+      pill.classList.add('lfai-pill-review');
+      pill.textContent = review + ' ' + cfg.i18n.toReview;
+      return;
+    }
+    if (pill) { pill.classList.remove('lfai-pill-review'); }
     if (!active.length) {
       if (pill) { pill.remove(); pill = null; }
       return;
@@ -110,20 +124,20 @@
     var total = 0, processed = 0;
     active.forEach(function (job) {
       total += parseInt(job.total, 10);
-      processed += parseInt(job.done, 10) + parseInt(job.failed, 10);
+      processed += parseInt(job.done, 10) + parseInt(job.failed, 10) + (parseInt(job.review, 10) || 0);
     });
     if (!pill) {
       pill = document.createElement('a');
       pill.className = 'lfai-pill';
-      pill.href = cfg.dashboardUrl;
       document.body.appendChild(pill);
     }
+    pill.href = cfg.dashboardUrl;
     pill.textContent = cfg.i18n.progress + ' ' + processed + '/' + total;
 
     active.forEach(function (job) {
       var row = document.querySelector('#lfai-jobs tr[data-id-job="' + job.id_job + '"]');
       if (!row) { return; }
-      var pct = job.total > 0 ? Math.round((parseInt(job.done, 10) + parseInt(job.failed, 10)) * 100 / job.total) : 0;
+      var pct = job.total > 0 ? Math.round((parseInt(job.done, 10) + parseInt(job.failed, 10) + (parseInt(job.review, 10) || 0)) * 100 / job.total) : 0;
       var bar = row.querySelector('.progress-bar');
       if (bar) { bar.style.width = pct + '%'; }
       var counts = row.querySelector('.lfai-counts');
@@ -137,7 +151,7 @@
     if (!status || !status.ok) {
       return status;
     }
-    renderProgress(status.active || []);
+    renderProgress(status.active || [], parseInt(status.review, 10) || 0, status.reviewUrl);
     (status.completed || []).forEach(notifyCompleted);
     return status;
   }

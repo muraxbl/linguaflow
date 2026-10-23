@@ -8,6 +8,11 @@
   </div>
 {/if}
 
+<p>
+  <a href="{$lfai_url|escape:'htmlall':'UTF-8'}&amp;view=review" class="btn btn-{if $lfai_review_count > 0}warning{else}default{/if}"><i class="icon-eye-open"></i> {l s='Review' mod='linguaflowai'} <span class="badge">{$lfai_review_count|intval}</span></a>
+  <a href="{$lfai_glossary_url|escape:'htmlall':'UTF-8'}" class="btn btn-default"><i class="icon-book"></i> {l s='Glossary and memory' mod='linguaflowai'}</a>
+</p>
+
 <div class="row">
   <div class="col-lg-5">
     <form method="post" action="{$lfai_url|escape:'htmlall':'UTF-8'}" class="panel">
@@ -88,7 +93,7 @@
                 <div class="progress" style="margin-bottom:4px">
                   <div class="progress-bar {if $job.failed > 0}progress-bar-warning{else}progress-bar-success{/if}" style="width: {$job.pct|intval}%"></div>
                 </div>
-                <small class="lfai-counts">{$job.done|intval} / {$job.total|intval}{if $job.failed > 0} · <span class="text-danger">{$job.failed|intval} {l s='failed' mod='linguaflowai'}</span>{/if}</small>
+                <small class="lfai-counts">{$job.done|intval} / {$job.total|intval}{if $job.review > 0} · <span class="text-warning">{$job.review|intval} {l s='to review' mod='linguaflowai'}</span>{/if}{if $job.failed > 0} · <span class="text-danger">{$job.failed|intval} {l s='failed' mod='linguaflowai'}</span>{/if}</small>
               </td>
               <td><span class="label label-{if $job.status == 'completed'}success{elseif $job.status == 'running'}info{elseif $job.status == 'cancelled'}default{else}warning{/if}">{$job.status|escape:'htmlall':'UTF-8'}</span></td>
               <td class="text-right">

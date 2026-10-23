@@ -29,6 +29,7 @@ use LinguaFlowAI\Settings;
 class LinguaFlowAI extends Module
 {
     public const ADMIN_CONTROLLER = 'AdminLinguaFlowAI';
+    public const GLOSSARY_CONTROLLER = 'AdminLinguaFlowAIGlossary';
 
     /** Hooks this module exposes so other modules can react. */
     private const CUSTOM_HOOKS = [
@@ -40,7 +41,7 @@ class LinguaFlowAI extends Module
     {
         $this->name = 'linguaflowai';
         $this->tab = 'administration';
-        $this->version = '1.0.0';
+        $this->version = '1.1.0';
         $this->author = 'LinguaFlow';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -58,6 +59,11 @@ class LinguaFlowAI extends Module
             'parent_class_name' => 'AdminCatalog',
             'visible' => true,
             'icon' => 'translate',
+        ], [
+            'class_name' => self::GLOSSARY_CONTROLLER,
+            'name' => 'LinguaFlow glossary',
+            'parent_class_name' => 'AdminCatalog',
+            'visible' => true,
         ]];
     }
 
@@ -167,7 +173,8 @@ class LinguaFlowAI extends Module
             'icon' => $this->getPathUri() . 'logo.png',
             'i18n' => [
                 'completedTitle' => $this->l('Translation finished'),
-                'completedBody' => $this->l('%label%: %done% translated, %failed% failed.'),
+                'completedBody' => $this->l('%label%: %done% translated, %review% to review, %failed% failed.'),
+                'toReview' => $this->l('to review'),
                 'progress' => $this->l('Translating'),
                 'open' => $this->l('Open'),
                 'bulkAction' => $this->l('Translate with AI (LinguaFlow)'),
@@ -258,6 +265,12 @@ class LinguaFlowAI extends Module
             'lfai_bo_worker' => (bool) Settings::get(Settings::BO_WORKER),
             'lfai_batch_size' => (int) Settings::get(Settings::BATCH_SIZE),
             'lfai_cron_url' => $this->context->link->getModuleLink($this->name, 'cron', ['token' => Settings::get(Settings::CRON_TOKEN)]),
+            'lfai_glossary_url' => $this->context->link->getAdminLink(self::GLOSSARY_CONTROLLER),
+            'lfai_style_languages' => $this->styleLanguages(),
+            'lfai_protected_patterns' => (string) Settings::get(Settings::PROTECTED_PATTERNS),
+            'lfai_protect_manufacturers' => (bool) Settings::get(Settings::PROTECT_MANUFACTURERS),
+            'lfai_context_size' => (int) Settings::get(Settings::CONTEXT_SIZE),
+            'lfai_disable_thinking' => (bool) Settings::get(Settings::DISABLE_THINKING),
         ]);
 
         return $output . $this->display(__FILE__, 'views/templates/admin/configure.tpl');
@@ -322,6 +335,33 @@ class LinguaFlowAI extends Module
         Settings::set(Settings::DO_NOT_TRANSLATE, mb_substr((string) Tools::getValue('LFAI_DO_NOT_TRANSLATE'), 0, 4000));
         Settings::set(Settings::BO_WORKER, (int) (bool) Tools::getValue('LFAI_BO_WORKER'));
         Settings::set(Settings::BATCH_SIZE, max(1, min(50, (int) Tools::getValue('LFAI_BATCH_SIZE'))));
+        Settings::set(Settings::PROTECT_MANUFACTURERS, (int) (bool) Tools::getValue('LFAI_PROTECT_MANUFACTURERS'));
+        Settings::set(Settings::CONTEXT_SIZE, max(0, min(1048576, (int) Tools::getValue('LFAI_CONTEXT_SIZE'))));
+        Settings::set(Settings::DISABLE_THINKING, (int) (bool) Tools::getValue('LFAI_DISABLE_THINKING'));
+
+        $patterns = [];
+        foreach (preg_split('/[\r\n]+/', (string) Tools::getValue('LFAI_PROTECTED_PATTERNS')) as $pattern) {
+            $pattern = trim($pattern);
+            if ($pattern === '') {
+                continue;
+            }
+            if (LinguaFlowAI\Translation\ProtectedTerms::isValidPattern($pattern)) {
+                $patterns[] = $pattern;
+            } else {
+                $errors[] = sprintf($this->l('Invalid protected pattern ignored: %s'), $pattern);
+            }
+        }
+        Settings::set(Settings::PROTECTED_PATTERNS, implode("\n", $patterns));
+
+        $styles = [];
+        foreach ((array) Tools::getValue('LFAI_LANG_STYLES', []) as $code => $style) {
+            $style = trim(mb_substr((string) $style, 0, 2000));
+            if ($style !== '' && preg_match('/^[A-Z]{2}$/', (string) $code)) {
+                $styles[$code] = $style;
+            }
+        }
+        Settings::set(Settings::LANG_STYLES, json_encode($styles, JSON_UNESCAPED_UNICODE));
+
         if (Tools::getValue('LFAI_REGENERATE_TOKEN')) {
             Settings::set(Settings::CRON_TOKEN, bin2hex(random_bytes(16)));
         }
@@ -360,6 +400,22 @@ class LinguaFlowAI extends Module
         }
 
         return $choices;
+    }
+
+    /** One style box per installed language except the source, keyed by language code. */
+    private function styleLanguages(): array
+    {
+        $styles = Settings::languageStyles();
+        $rows = [];
+        foreach (Language::getLanguages(false) as $lang) {
+            if ((int) $lang['id_lang'] === Settings::sourceLanguageId()) {
+                continue;
+            }
+            $code = LinguaFlowAI\Translation\LanguageInfo::code((string) $lang['iso_code'], (string) ($lang['language_code'] ?? ''));
+            $rows[$code] = ['code' => $code, 'name' => $lang['name'], 'style' => (string) ($styles[$code] ?? '')];
+        }
+
+        return array_values($rows);
     }
 
     public function fieldLabels(): array

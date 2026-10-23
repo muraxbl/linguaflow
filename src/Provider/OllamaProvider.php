@@ -16,6 +16,8 @@ class OllamaProvider implements ProviderInterface
     private $config;
     /** @var HttpJsonClient */
     private $http;
+    /** @var bool set once the model rejected the "think" option (models without reasoning) */
+    private $thinkRejected = false;
 
     public function __construct(ProviderConfig $config, ?HttpJsonClient $http = null)
     {
@@ -41,26 +43,43 @@ class OllamaProvider implements ProviderInterface
         return $ids;
     }
 
-    public function completeJson(string $system, string $user, array $schema): array
+    public function complete(string $prompt, float $temperature): string
     {
         if ($this->config->model === '') {
             throw new ProviderException('No model configured.');
         }
-        $response = $this->http->request('POST', $this->config->baseUrl . '/api/chat', $this->headers(), [
+        $options = ['temperature' => $temperature, 'top_p' => 0.9, 'num_predict' => 2048];
+        if ($this->config->contextSize > 0) {
+            // Same num_ctx as the loaded model, so Ollama does not have to reload it.
+            $options['num_ctx'] = $this->config->contextSize;
+        }
+        $body = [
             'model' => $this->config->model,
-            'messages' => [
-                ['role' => 'system', 'content' => $system],
-                ['role' => 'user', 'content' => $user],
-            ],
-            'format' => $schema,
+            'messages' => [['role' => 'user', 'content' => $prompt]],
             'stream' => false,
-            'options' => ['temperature' => 0.2],
-        ]);
+            'keep_alive' => '30m',
+            'options' => $options,
+        ];
+        if ($this->config->disableThinking && !$this->thinkRejected) {
+            // Reasoning before translating (Gemma 4, Qwen 3...) only adds time.
+            $body['think'] = false;
+        }
+
+        try {
+            $response = $this->http->request('POST', $this->config->baseUrl . '/api/chat', $this->headers(), $body);
+        } catch (ProviderException $e) {
+            if (isset($body['think']) && stripos($e->getMessage(), 'think') !== false) {
+                $this->thinkRejected = true;
+
+                return $this->complete($prompt, $temperature);
+            }
+            throw $e;
+        }
         if (($response['done_reason'] ?? '') === 'length') {
             throw new ProviderException('The translation was cut off (context/token limit reached).');
         }
 
-        return JsonExtractor::decode((string) ($response['message']['content'] ?? ''));
+        return (string) ($response['message']['content'] ?? '');
     }
 
     private function headers(): array

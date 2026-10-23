@@ -66,6 +66,18 @@
       </div>
     </div>
 
+    <div class="form-group lfai-ollama-only">
+      <label class="control-label col-lg-3">{l s='Ollama options' mod='linguaflowai'}</label>
+      <div class="col-lg-6">
+        <div class="checkbox"><label><input type="checkbox" name="LFAI_DISABLE_THINKING" value="1" {if $lfai_disable_thinking}checked{/if}> {l s='Disable thinking (think=false) for reasoning models such as Gemma 4 or Qwen 3: it only adds time when translating' mod='linguaflowai'}</label></div>
+        <div class="input-group" style="max-width:320px">
+          <span class="input-group-addon">num_ctx</span>
+          <input type="number" min="0" name="LFAI_CONTEXT_SIZE" class="form-control" value="{$lfai_context_size|intval}">
+        </div>
+        <p class="help-block">{l s='0 = model default. Use the same value as the loaded model (e.g. 4096) so Ollama does not reload it.' mod='linguaflowai'}</p>
+      </div>
+    </div>
+
     <div class="form-group">
       <label class="control-label col-lg-3" for="LFAI_TIMEOUT">{l s='Request timeout (s)' mod='linguaflowai'}</label>
       <div class="col-lg-2">
@@ -121,6 +133,24 @@
     </div>
 
     <div class="form-group">
+      <label class="control-label col-lg-3">{l s='Style per language' mod='linguaflowai'}</label>
+      <div class="col-lg-6">
+        {foreach from=$lfai_style_languages item=row}
+          <label for="lfai-style-{$row.code|escape:'htmlall':'UTF-8'}">{$row.name|escape:'htmlall':'UTF-8'} <span class="text-muted">({$row.code|escape:'htmlall':'UTF-8'})</span></label>
+          <textarea name="LFAI_LANG_STYLES[{$row.code|escape:'htmlall':'UTF-8'}]" id="lfai-style-{$row.code|escape:'htmlall':'UTF-8'}" rows="2" class="form-control" style="margin-bottom:8px">{$row.style|escape:'htmlall':'UTF-8'}</textarea>
+        {/foreach}
+        <p class="help-block">{l s='Variant and register of each language, e.g. "Write in European Portuguese, never Brazilian. Formal tone."' mod='linguaflowai'}</p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="control-label col-lg-3">{l s='Glossary' mod='linguaflowai'}</label>
+      <div class="col-lg-6">
+        <a href="{$lfai_glossary_url|escape:'htmlall':'UTF-8'}" class="btn btn-default"><i class="icon-book"></i> {l s='Glossary, translation memory and category hints' mod='linguaflowai'}</a>
+      </div>
+    </div>
+
+    <div class="form-group">
       <label class="control-label col-lg-3" for="LFAI_INSTRUCTIONS">{l s='Style instructions' mod='linguaflowai'}</label>
       <div class="col-lg-6">
         <textarea name="LFAI_INSTRUCTIONS" id="LFAI_INSTRUCTIONS" rows="4" class="form-control" placeholder="{l s='e.g. Informal tone, address the customer as tú in Spanish. Use British English.' mod='linguaflowai'}">{$lfai_instructions|escape:'htmlall':'UTF-8'}</textarea>
@@ -128,9 +158,19 @@
     </div>
 
     <div class="form-group">
-      <label class="control-label col-lg-3" for="LFAI_DO_NOT_TRANSLATE">{l s='Never translate' mod='linguaflowai'}</label>
+      <label class="control-label col-lg-3" for="LFAI_DO_NOT_TRANSLATE">{l s='Protected brands' mod='linguaflowai'}</label>
       <div class="col-lg-6">
-        <textarea name="LFAI_DO_NOT_TRANSLATE" id="LFAI_DO_NOT_TRANSLATE" rows="3" class="form-control" placeholder="{l s='Brand names, one per line or comma separated' mod='linguaflowai'}">{$lfai_do_not_translate|escape:'htmlall':'UTF-8'}</textarea>
+        <textarea name="LFAI_DO_NOT_TRANSLATE" id="LFAI_DO_NOT_TRANSLATE" rows="4" class="form-control" placeholder="{l s='Brand names, one per line or comma separated' mod='linguaflowai'}">{$lfai_do_not_translate|escape:'htmlall':'UTF-8'}</textarea>
+        <div class="checkbox"><label><input type="checkbox" name="LFAI_PROTECT_MANUFACTURERS" value="1" {if $lfai_protect_manufacturers}checked{/if}> {l s='Also protect the manufacturer of each product' mod='linguaflowai'}</label></div>
+        <p class="help-block">{l s='Never translated, and a translation that loses one of them is asked again.' mod='linguaflowai'}</p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="control-label col-lg-3" for="LFAI_PROTECTED_PATTERNS">{l s='Protected codes' mod='linguaflowai'}</label>
+      <div class="col-lg-6">
+        <textarea name="LFAI_PROTECTED_PATTERNS" id="LFAI_PROTECTED_PATTERNS" rows="4" class="form-control" style="font-family:monospace">{$lfai_protected_patterns|escape:'htmlall':'UTF-8'}</textarea>
+        <p class="help-block">{l s='Regular expressions, one per line (e.g. IP ratings, lamp sockets, LED chip codes). Figures with units are not protected: the decimal separator must be adapted.' mod='linguaflowai'}</p>
       </div>
     </div>
   </div>

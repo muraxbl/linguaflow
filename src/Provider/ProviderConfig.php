@@ -47,8 +47,12 @@ final class ProviderConfig
     public $effort;
     /** @var int request timeout in seconds */
     public $timeout;
+    /** @var int Ollama num_ctx (0 = model default) */
+    public $contextSize;
+    /** @var bool Ollama: send think=false to skip the reasoning phase of thinking models */
+    public $disableThinking;
 
-    public function __construct(string $provider, string $apiKey, string $baseUrl, string $model, string $effort = 'medium', int $timeout = 120)
+    public function __construct(string $provider, string $apiKey, string $baseUrl, string $model, string $effort = 'medium', int $timeout = 120, int $contextSize = 0, bool $disableThinking = true)
     {
         if (!isset(self::DEFAULTS[$provider])) {
             throw new ProviderException(sprintf('Unknown provider "%s".', $provider));
@@ -59,5 +63,7 @@ final class ProviderConfig
         $this->model = trim($model) !== '' ? trim($model) : self::DEFAULTS[$provider]['model'];
         $this->effort = $effort;
         $this->timeout = $timeout;
+        $this->contextSize = $contextSize;
+        $this->disableThinking = $disableThinking;
     }
 }

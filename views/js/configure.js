@@ -24,6 +24,9 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.lfai-anthropic-only').forEach(function (el) {
       el.style.display = provider.value === 'anthropic' ? '' : 'none';
     });
+    document.querySelectorAll('.lfai-ollama-only').forEach(function (el) {
+      el.style.display = provider.value === 'ollama_local' || provider.value === 'ollama_cloud' ? '' : 'none';
+    });
     if (!modelInput.value && d.model) {
       modelInput.value = d.model;
     }

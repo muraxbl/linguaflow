@@ -51,17 +51,17 @@ class AnthropicProvider implements ProviderInterface
         return $ids;
     }
 
-    public function completeJson(string $system, string $user, array $schema): array
+    /**
+     * The 2026-10-21 API version rejects sampling parameters, so $temperature is not sent:
+     * retries rely on the rejection reason the prompt carries instead.
+     */
+    public function complete(string $prompt, float $temperature): string
     {
         $body = [
             'model' => $this->config->model,
             'max_tokens' => 16000,
-            'system' => $system,
-            'messages' => [['role' => 'user', 'content' => $user]],
-            'output_config' => [
-                'effort' => $this->config->effort,
-                'format' => ['type' => 'json_schema', 'schema' => $schema],
-            ],
+            'messages' => [['role' => 'user', 'content' => $prompt]],
+            'output_config' => ['effort' => $this->config->effort],
         ];
         $headers = $this->headers();
         if (in_array($this->config->model, self::FALLBACK_MODELS, true)) {
@@ -78,7 +78,7 @@ class AnthropicProvider implements ProviderInterface
             throw new ProviderException('The model declined to translate this content' . ($category !== '' ? ' (' . $category . ')' : '') . '.');
         }
         if ($stopReason === 'max_tokens') {
-            throw new ProviderException('The translation was cut off (max_tokens reached). The source text is probably too long.');
+            throw new ProviderException('The translation was cut off (max_tokens reached).');
         }
 
         $text = '';
@@ -88,7 +88,7 @@ class AnthropicProvider implements ProviderInterface
             }
         }
 
-        return JsonExtractor::decode($text);
+        return $text;
     }
 
     private function headers(): array

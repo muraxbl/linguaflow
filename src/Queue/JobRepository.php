@@ -26,6 +26,8 @@ class JobRepository
     public const ITEM_DONE = 'done';
     public const ITEM_FAILED = 'failed';
     public const ITEM_SKIPPED = 'skipped';
+    /** Translated but held back: QA found issues and a person has to approve it. */
+    public const ITEM_REVIEW = 'review';
 
     public const MAX_ATTEMPTS = 3;
 
@@ -54,6 +56,7 @@ class JobRepository
                 `total` INT UNSIGNED NOT NULL DEFAULT 0,
                 `done` INT UNSIGNED NOT NULL DEFAULT 0,
                 `failed` INT UNSIGNED NOT NULL DEFAULT 0,
+                `review` INT UNSIGNED NOT NULL DEFAULT 0,
                 `date_add` DATETIME NOT NULL,
                 `date_upd` DATETIME NOT NULL,
                 `date_completed` DATETIME NULL,
@@ -68,12 +71,33 @@ class JobRepository
                 `status` VARCHAR(16) NOT NULL,
                 `attempts` TINYINT UNSIGNED NOT NULL DEFAULT 0,
                 `error` TEXT NULL,
+                `payload` MEDIUMTEXT NULL,
                 `available_at` DATETIME NOT NULL,
                 `date_upd` DATETIME NOT NULL,
                 PRIMARY KEY (`id_item`),
                 UNIQUE KEY `job_product_lang` (`id_job`, `id_product`, `id_lang`),
                 KEY `queue` (`status`, `available_at`),
                 KEY `product_lang` (`id_product`, `id_lang`, `status`)
+            ) ENGINE={$engine} DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS `{$p}linguaflowai_glossary` (
+                `id_term` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `term` VARCHAR(191) NOT NULL,
+                `translations` TEXT NOT NULL,
+                `date_upd` DATETIME NOT NULL,
+                PRIMARY KEY (`id_term`),
+                UNIQUE KEY `term` (`term`)
+            ) ENGINE={$engine} DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS `{$p}linguaflowai_tm` (
+                `tm_key` CHAR(40) NOT NULL,
+                `status` CHAR(2) NOT NULL,
+                `lang` VARCHAR(8) NOT NULL,
+                `field` VARCHAR(32) NOT NULL,
+                `model` VARCHAR(128) NOT NULL DEFAULT '',
+                `src` MEDIUMTEXT NOT NULL,
+                `tgt` MEDIUMTEXT NOT NULL,
+                `date_upd` DATETIME NOT NULL,
+                PRIMARY KEY (`tm_key`),
+                KEY `status_lang` (`status`, `lang`)
             ) ENGINE={$engine} DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS `{$p}linguaflowai_notice` (
                 `id_job` INT UNSIGNED NOT NULL,
@@ -90,6 +114,8 @@ class JobRepository
 
         return [
             "DROP TABLE IF EXISTS `{$p}linguaflowai_notice`",
+            "DROP TABLE IF EXISTS `{$p}linguaflowai_glossary`",
+            "DROP TABLE IF EXISTS `{$p}linguaflowai_tm`",
             "DROP TABLE IF EXISTS `{$p}linguaflowai_item`",
             "DROP TABLE IF EXISTS `{$p}linguaflowai_job`",
         ];
@@ -163,7 +189,7 @@ class JobRepository
             $busy = [];
             $rows = $this->db->executeS("SELECT id_product, id_lang FROM `{$p}linguaflowai_item`
                 WHERE id_product IN (" . implode(',', $chunk) . ")
-                AND status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_PROCESSING . "')") ?: [];
+                AND status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_PROCESSING . "', '" . self::ITEM_REVIEW . "')") ?: [];
             foreach ($rows as $row) {
                 $busy[$row['id_product'] . '-' . $row['id_lang']] = true;
             }
@@ -253,7 +279,7 @@ class JobRepository
     public function refreshCounters(int $idJob): bool
     {
         $p = _DB_PREFIX_;
-        $counts = ['total' => 0, 'done' => 0, 'failed' => 0, 'open' => 0];
+        $counts = ['total' => 0, 'done' => 0, 'failed' => 0, 'review' => 0, 'open' => 0];
         foreach ($this->db->executeS("SELECT status, COUNT(*) n FROM `{$p}linguaflowai_item` WHERE id_job = " . $idJob . ' GROUP BY status') ?: [] as $row) {
             $n = (int) $row['n'];
             $counts['total'] += $n;
@@ -261,6 +287,8 @@ class JobRepository
                 $counts['done'] += $n;
             } elseif ($row['status'] === self::ITEM_FAILED) {
                 $counts['failed'] += $n;
+            } elseif ($row['status'] === self::ITEM_REVIEW) {
+                $counts['review'] += $n;
             } else {
                 $counts['open'] += $n;
             }
@@ -270,6 +298,7 @@ class JobRepository
             'total' => $counts['total'],
             'done' => $counts['done'],
             'failed' => $counts['failed'],
+            'review' => $counts['review'],
             'date_upd' => date('Y-m-d H:i:s'),
         ], 'id_job = ' . $idJob);
 
@@ -336,6 +365,67 @@ class JobRepository
         $this->db->delete('linguaflowai_job', 'id_job = ' . $idJob);
     }
 
+    /** Holds a translated item for review; $payload carries the translated fields and their issues. */
+    public function markReview(array $item, array $payload): void
+    {
+        $this->db->update('linguaflowai_item', [
+            'status' => self::ITEM_REVIEW,
+            'error' => '',
+            'payload' => pSQL(json_encode($payload), true),
+            'date_upd' => date('Y-m-d H:i:s'),
+        ], 'id_item = ' . (int) $item['id_item']);
+    }
+
+    public function getItem(int $idItem): ?array
+    {
+        $item = $this->db->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_item` WHERE id_item = ' . $idItem, false);
+        if (!$item) {
+            return null;
+        }
+        $item['payload'] = json_decode((string) $item['payload'], true) ?: [];
+
+        return $item;
+    }
+
+    public function countReview(): int
+    {
+        return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . "linguaflowai_item` WHERE status = '" . self::ITEM_REVIEW . "'");
+    }
+
+    /** Items waiting for review, oldest first, with product name and language. */
+    public function reviewItems(int $limit, int $offset = 0): array
+    {
+        $rows = $this->db->executeS('SELECT i.*, l.name lang_name, l.iso_code FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
+            LEFT JOIN `' . _DB_PREFIX_ . "lang` l ON l.id_lang = i.id_lang
+            WHERE i.status = '" . self::ITEM_REVIEW . "'
+            ORDER BY i.id_item LIMIT " . (int) $offset . ', ' . (int) $limit) ?: [];
+        foreach ($rows as &$row) {
+            $row['payload'] = json_decode((string) $row['payload'], true) ?: [];
+        }
+
+        return $rows;
+    }
+
+    /** Sends an item back to the queue to be translated again, ignoring the memory. */
+    public function requeue(int $idItem): void
+    {
+        $item = $this->getItem($idItem);
+        if (!$item) {
+            return;
+        }
+        $this->db->update('linguaflowai_item', [
+            'status' => self::ITEM_PENDING,
+            'attempts' => 0,
+            'error' => '',
+            'payload' => pSQL(json_encode(['regenerate' => true])),
+            'available_at' => date('Y-m-d H:i:s'),
+            'date_upd' => date('Y-m-d H:i:s'),
+        ], 'id_item = ' . $idItem);
+        $this->db->update('linguaflowai_job', ['status' => self::JOB_QUEUED, 'date_completed' => null], 'id_job = ' . (int) $item['id_job'] . " AND status = '" . self::JOB_COMPLETED . "'", 0, true);
+        $this->db->execute('DELETE FROM `' . _DB_PREFIX_ . 'linguaflowai_notice` WHERE id_job = ' . (int) $item['id_job']);
+        $this->refreshCounters((int) $item['id_job']);
+    }
+
     public function countDue(): int
     {
         return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
@@ -347,7 +437,7 @@ class JobRepository
     /** Jobs still in progress, for the back office progress indicator. */
     public function activeJobs(): array
     {
-        return $this->db->executeS('SELECT id_job, type, label, status, total, done, failed FROM `' . _DB_PREFIX_ . "linguaflowai_job`
+        return $this->db->executeS('SELECT id_job, type, label, status, total, done, failed, review FROM `' . _DB_PREFIX_ . "linguaflowai_job`
             WHERE status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "') ORDER BY id_job") ?: [];
     }
 
@@ -357,7 +447,7 @@ class JobRepository
     public function pullCompletedNotices(int $idEmployee): array
     {
         $p = _DB_PREFIX_;
-        $jobs = $this->db->executeS("SELECT j.id_job, j.type, j.label, j.total, j.done, j.failed, j.date_completed
+        $jobs = $this->db->executeS("SELECT j.id_job, j.type, j.label, j.total, j.done, j.failed, j.review, j.date_completed
             FROM `{$p}linguaflowai_job` j
             LEFT JOIN `{$p}linguaflowai_notice` n ON n.id_job = j.id_job AND n.id_employee = " . $idEmployee . "
             WHERE j.status = '" . self::JOB_COMPLETED . "' AND n.id_job IS NULL

@@ -7,6 +7,7 @@ Módulo para **PrestaShop 1.7.6 a 9** (PHP 7.2 o superior) que traduce productos
 - **Traducción masiva** desde *Catálogo › LinguaFlow AI*: productos sin traducir, por categoría (con subcategorías), por IDs o el catálogo completo.
 - **Botón "Translate with AI"** en la pestaña *Módulos* de la ficha de producto.
 - **Cola por lotes**: cada trabajo se divide en elementos (producto × idioma) que se procesan poco a poco. Cada producto se actualiza en cuanto llega su traducción. Los errores temporales (límites de uso, caídas de red) se reintentan hasta 3 veces.
+- **Glosario obligatorio, memoria de traducción y revisión** (ver más abajo): terminología fija por idioma, reutilización de párrafos ya traducidos y retención de las traducciones dudosas hasta que las apruebes.
 - **Aviso al terminar**: el módulo lanza el hook `actionLinguaFlowAIJobCompleted`, escribe en el registro de PrestaShop y muestra un toast en el back office y una notificación nativa del navegador (que hay que activar una vez desde la configuración). Mientras hay trabajos en marcha aparece un indicador de progreso en la esquina.
 
 ## Proveedores
@@ -23,9 +24,49 @@ Módulo para **PrestaShop 1.7.6 a 9** (PHP 7.2 o superior) que traduce productos
 En la configuración, **Load models** consulta la API del proveedor y rellena un desplegable. Si el proveedor no permite listar modelos, se escribe el nombre a mano.
 
 Notas:
-- **Anthropic** se llama por HTTP (Messages API, `anthropic-version: 2026-10-21`) porque el SDK oficial de PHP exige PHP 8.1. Usa salida estructurada (JSON schema) y el nivel de *effort* configurable. Modelo por defecto: `claude-opus-5-5`. En los modelos que lo admiten se activa `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): si el modelo rechaza una petición, Anthropic la repite automáticamente con su modelo de respaldo recomendado.
-- **OpenAI** usa `response_format: json_schema` en modo estricto. Los proveedores compatibles y Open WebUI reciben el formato en el prompt y la respuesta se interpreta de forma tolerante (bloques de código, texto alrededor).
-- **Ollama** usa `format` con el JSON schema (Ollama 0.5+).
+- **Anthropic** se llama por HTTP (Messages API, `anthropic-version: 2026-10-21`) porque el SDK oficial de PHP exige PHP 8.1. Nivel de *effort* configurable; la API 2026-10-21 no admite `temperature`, así que en los reintentos solo cuenta el motivo del rechazo. Modelo por defecto: `claude-opus-5-5`. En los modelos que lo admiten se activa `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): si el modelo rechaza una petición, Anthropic la repite automáticamente con su modelo de respaldo recomendado.
+- **OpenAI, compatibles y Open WebUI** usan `/chat/completions`. Si un modelo rechaza `temperature` (modelos de razonamiento), se deja de enviar automáticamente.
+- **Ollama**: API nativa `/api/chat`, con opción de desactivar el razonamiento previo (`think=false`) y fijar `num_ctx`.
+- **Open WebUI con Ollama detrás**: además de `/api/chat/completions`, Open WebUI publica la API de Ollama en `/ollama`. Usa el proveedor **Ollama** con URL base `https://tu-openwebui/ollama` y tu clave de Open WebUI: es la API nativa (admite `think` y `num_ctx`) y sigue funcionando aunque `/api/chat/completions` falle.
+
+## Cómo se traduce
+
+El motor está pensado para funcionar bien también con modelos locales pequeños (Gemma, Qwen…), no solo con los grandes:
+
+1. **Campo a campo, nombre primero.** El nombre traducido se pasa como contexto al resto de campos. Un meta title "Nombre | Marca" con el mismo nombre reutiliza la traducción sin llamar al modelo.
+2. **Descripciones párrafo a párrafo.** El HTML se trocea por etiquetas de bloque (`<p>`, `<h2>`, `<li>`…), que nunca llegan al modelo. Las etiquetas en línea (`<strong>`, `<a>`, `<br>`) viajan como marcadores cortos `<t1>…</t1>` / `<t2/>`, se valida que vuelvan una vez cada una y bien anidadas, y se restauran.
+3. **Prompt por capas**, de lo fijo a lo variable (aprovecha la caché de prompt de Ollama, Anthropic y OpenAI): reglas, estilo del idioma (variante y tratamiento), instrucciones de la tienda, tipo de campo, pista de la categoría, **solo los términos del glosario que aparecen en ese párrafo**, contexto del producto y el texto.
+4. **Validación y reintentos.** Se rechaza y se vuelve a pedir (hasta 3 veces, subiendo la temperatura y diciendo al modelo por qué se rechazó) si la respuesta viene vacía, en mayúsculas, sin una marca o código protegido, con los marcadores rotos o con una meta description demasiado larga. Último recurso: traducir el párrafo sin marcadores (se pierde la negrita, no la traducción).
+5. **Revisión automática (QA).** Cifras perdidas (`2.200` = `2 200` = `2200`, `3,7` = `3.7`), texto sin traducir, restos de español, mayúsculas, longitudes SEO, negritas o enlaces perdidos y términos del glosario no respetados. **Si hay avisos, la traducción no se guarda en el producto**: queda en *LinguaFlow AI › Revisión* para aprobarla (editándola si hace falta), volver a traducirla o descartarla.
+
+### Glosario
+
+*Catálogo › LinguaFlow glossary.* Término de origen → traducción por idioma (`EN`, `FR`, `IT`, `PT`, `DE`…). El término encaja sin distinguir mayúsculas, como palabra completa y en plural (`tira LED` encaja con `Tiras LED`, `plafón` con `plafones`). Se importa y exporta en el mismo formato que `glossary.json`:
+
+```json
+{ "plafón": { "EN": "ceiling light", "FR": "plafonnier", "DE": "Deckenleuchte" } }
+```
+
+### Memoria de traducción
+
+- **Aprobadas** (`ok`): lo que apruebas en la revisión. Se guardan por campo y también por párrafo, así un párrafo corregido se reutiliza en todos los productos que lo repiten. Valen con cualquier modelo.
+- **Automáticas** (`mt`): traducciones que pasaron la validación. Solo se reutilizan con el mismo modelo, versión del prompt, pista de categoría y términos de glosario aplicados; si cambia el glosario, se traducen de nuevo.
+- Se puede importar un `tm.json` del traductor web.
+
+### Pistas por categoría
+
+Contexto para el modelo según la categoría por defecto del producto (o la de su categoría padre más cercana con pista). Por ejemplo, para "Estancas": *"barra" tiene LED integrado, "pantalla" usa tubos T8*.
+
+### Probar el motor sin PrestaShop
+
+`tools/try-translation.php` ejecuta el mismo motor desde la línea de comandos (no se incluye en el zip). La configuración va en variables de entorno, así la clave no queda escrita en ningún fichero:
+
+```bash
+export LFAI_PROVIDER=openwebui LFAI_BASE_URL=https://tu-openwebui LFAI_MODEL=gemma4:12b
+read -s LFAI_API_KEY && export LFAI_API_KEY
+php tools/try-translation.php --list-models
+php tools/try-translation.php --to=FR --glossary=glossary.json --field=Description descripcion.html
+```
 
 ## Qué se traduce
 
@@ -33,7 +74,9 @@ Se puede elegir qué campos traducir: nombre, resumen, descripción, meta title,
 
 - **Sobrescribir traducciones existentes**: si está desactivado, solo se traducen los campos vacíos o los que siguen siendo idénticos al idioma origen (PrestaShop copia el texto original en todos los idiomas al crear un producto).
 - **URL amigable** generada a partir del nombre traducido.
-- **Instrucciones de estilo** (tono, tuteo/usted, variante regional…) y **términos que nunca se traducen** (marcas).
+- **Estilo por idioma** (variante y tratamiento: inglés británico, *vous*, *Sie*, portugués europeo…) e **instrucciones generales** de la tienda.
+- **Marcas protegidas** (y el fabricante de cada producto) y **códigos protegidos** por expresión regular (IP65, E27, GU10, SMD 2835…): nunca se traducen y se comprueba que aparezcan en la traducción.
+- **Ollama**: desactivar el razonamiento previo (`think=false`) de modelos como Gemma 4 o Qwen 3 y fijar `num_ctx`.
 
 El HTML de las descripciones se conserva. La traducción se escribe en todas las tiendas a las que pertenece el producto, se reindexa la búsqueda y se lanza `actionProductUpdate` para que otros módulos se enteren.
 
@@ -67,10 +110,12 @@ Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflow
 
 ```
 linguaflowai.php                       Módulo: instalación, hooks, configuración
-controllers/admin/AdminLinguaFlowAIController.php   Panel de trabajos + endpoints AJAX
+controllers/admin/AdminLinguaFlowAIController.php   Panel de trabajos, revisión y endpoints AJAX
+controllers/admin/AdminLinguaFlowAIGlossaryController.php   Glosario, memoria y pistas por categoría
 controllers/front/cron.php             Worker por cron
 src/Provider/                          Anthropic, OpenAI/compatibles/Open WebUI, Ollama (todo por cURL)
-src/Translation/                       Prompt + escritura en product_lang
+src/Translation/                       Motor: HTML y marcadores, glosario, términos protegidos,
+                                       prompt, QA, memoria, traducción por producto y escritura
 src/Queue/                             Trabajos, elementos, worker
 src/Controller/Admin/BulkTranslateController.php    Acción masiva de la lista de productos de 8.1+
 views/js/notifier.js                   Toasts, notificaciones nativas, progreso, worker del back office

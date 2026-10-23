@@ -16,6 +16,8 @@ class OpenAiProvider implements ProviderInterface
     private $config;
     /** @var HttpJsonClient */
     private $http;
+    /** @var bool set once the model rejected the temperature parameter (reasoning models) */
+    private $temperatureRejected = false;
 
     public function __construct(ProviderConfig $config, ?HttpJsonClient $http = null)
     {
@@ -43,28 +45,32 @@ class OpenAiProvider implements ProviderInterface
         return $ids;
     }
 
-    public function completeJson(string $system, string $user, array $schema): array
+    public function complete(string $prompt, float $temperature): string
     {
         if ($this->config->model === '') {
             throw new ProviderException('No model configured.');
         }
         $body = [
             'model' => $this->config->model,
-            'messages' => [
-                ['role' => 'system', 'content' => $system],
-                ['role' => 'user', 'content' => $user],
-            ],
+            'messages' => [['role' => 'user', 'content' => $prompt]],
             'stream' => false,
         ];
-        if ($this->config->provider === ProviderConfig::OPENAI) {
-            // Only OpenAI itself is guaranteed to support strict schemas; elsewhere the prompt carries the format.
-            $body['response_format'] = [
-                'type' => 'json_schema',
-                'json_schema' => ['name' => 'translation', 'strict' => true, 'schema' => $schema],
-            ];
+        if (!$this->temperatureRejected) {
+            $body['temperature'] = $temperature;
         }
 
-        $response = $this->http->request('POST', $this->url('chat/completions'), $this->headers(), $body);
+        try {
+            $response = $this->http->request('POST', $this->url('chat/completions'), $this->headers(), $body);
+        } catch (ProviderException $e) {
+            if (isset($body['temperature']) && stripos($e->getMessage(), 'temperature') !== false) {
+                // Reasoning models only accept their default temperature: drop it from now on.
+                $this->temperatureRejected = true;
+
+                return $this->complete($prompt, $temperature);
+            }
+            throw $e;
+        }
+
         $choice = $response['choices'][0] ?? null;
         if (!is_array($choice)) {
             throw new ProviderException('Unexpected response: no choices returned.', true);
@@ -76,7 +82,7 @@ class OpenAiProvider implements ProviderInterface
             throw new ProviderException('The model refused: ' . $choice['message']['refusal']);
         }
 
-        return JsonExtractor::decode((string) ($choice['message']['content'] ?? ''));
+        return (string) ($choice['message']['content'] ?? '');
     }
 
     private function url(string $path): string

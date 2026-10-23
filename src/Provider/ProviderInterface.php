@@ -18,10 +18,8 @@ interface ProviderInterface
     public function listModels(): array;
 
     /**
-     * Sends a system + user prompt and returns the decoded JSON object the model answered with.
-     * $schema is a JSON schema (type=object) describing the expected answer.
-     *
-     * @return array<string, mixed>
+     * Sends a single user prompt and returns the model's text answer.
+     * $temperature is a hint: providers or models that reject it ignore it.
      */
-    public function completeJson(string $system, string $user, array $schema): array;
+    public function complete(string $prompt, float $temperature): string;
 }

@@ -57,3 +57,33 @@
 .lfai-product-panel .lfai-product-result {
   margin-left: 10px;
 }
+
+.lfai-pill-review { background: #fab000; }
+.lfai-pill-review::before { animation: none; }
+
+.lfai-review-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.lfai-review-field {
+  margin-bottom: 10px;
+  padding: 6px 0;
+}
+
+.lfai-review-field.lfai-has-issues { background: #fff8e5; }
+
+.lfai-issue {
+  margin-top: 4px;
+  color: #b07a00;
+  font-size: 12px;
+}
+
+.lfai-source {
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: #f5f6f7;
+  border-radius: 3px;
+  white-space: pre-wrap;
+}
