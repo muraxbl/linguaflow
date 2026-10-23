@@ -1,0 +1,15 @@
+# Dependencies (bundled at build time by build.sh)
+/vendor/
+
+# Build output
+/linguaflowai.zip
+
+# Environment files: never commit secrets, only the example
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,59 @@
+.lfai-pill {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10000;
+  padding: 6px 14px;
+  border-radius: 16px;
+  background: #25b9d7;
+  color: #fff !important;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+  text-decoration: none !important;
+}
+
+.lfai-pill::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #fff;
+  animation: lfai-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes lfai-pulse {
+  0%, 100% { opacity: .3; }
+  50% { opacity: 1; }
+}
+
+.lfai-toast {
+  position: fixed;
+  top: 70px;
+  right: 16px;
+  z-index: 10001;
+  max-width: 360px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  background: #fff;
+  border-left: 4px solid #70b580;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .2);
+  cursor: pointer;
+  transition: opacity .5s;
+}
+
+.lfai-toast-warning { border-left-color: #fab000; }
+.lfai-toast-error { border-left-color: #f54c3e; }
+.lfai-toast-hide { opacity: 0; }
+
+.lfai-product-panel .lfai-lang {
+  display: inline-block;
+  margin-right: 14px;
+  font-weight: normal;
+}
+
+.lfai-product-panel .lfai-product-result {
+  margin-left: 10px;
+}

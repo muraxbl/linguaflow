@@ -1,0 +1,24 @@
+{
+  "name": "linguaflow/linguaflowai",
+  "description": "LinguaFlow AI - AI powered catalog translation for PrestaShop",
+  "type": "prestashop-module",
+  "license": "AFL-3.0",
+  "require": {
+    "php": ">=8.1",
+    "anthropic-ai/sdk": "^1.1",
+    "guzzlehttp/guzzle": "^7.4"
+  },
+  "autoload": {
+    "psr-4": {
+      "LinguaFlowAI\\": "src/"
+    }
+  },
+  "config": {
+    "preferred-install": "dist",
+    "prepend-autoloader": false,
+    "optimize-autoloader": true,
+    "allow-plugins": {
+      "php-http/discovery": false
+    }
+  }
+}
