@@ -31,8 +31,8 @@ class TranslationMemory implements MemoryInterface
     {
         $this->db->execute('INSERT INTO `' . _DB_PREFIX_ . 'linguaflowai_tm` (tm_key, status, lang, field, model, src, tgt, date_upd) VALUES ('
             . "'" . pSQL($key) . "', '" . pSQL($status) . "', '" . pSQL($langCode) . "', '" . pSQL($field) . "', '" . pSQL(mb_substr($model, 0, 128)) . "', "
-            . "'" . pSQL($source, true) . "', '" . pSQL($target, true) . "', NOW())
-            ON DUPLICATE KEY UPDATE status = VALUES(status), tgt = VALUES(tgt), model = VALUES(model), date_upd = NOW()");
+            . "'" . pSQL($source, true) . "', '" . pSQL($target, true) . "', '" . date('Y-m-d H:i:s') . "')
+            ON DUPLICATE KEY UPDATE status = VALUES(status), tgt = VALUES(tgt), model = VALUES(model), date_upd = VALUES(date_upd)");
     }
 
     /**

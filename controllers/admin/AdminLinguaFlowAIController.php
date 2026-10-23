@@ -45,7 +45,14 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         $jobs = new JobRepository();
         $viewJob = (int) Tools::getValue('view_job');
         $jobList = $jobs->listJobs();
+        $active = [];
+        foreach ($jobs->activeJobs() as $row) {
+            $active[(int) $row['id_job']] = $row;
+        }
         foreach ($jobList as &$job) {
+            $job['next_at'] = $active[(int) $job['id_job']]['next_at'] ?? null;
+            $job['waiting'] = !empty($active[(int) $job['id_job']]['waiting']);
+            $job['last_error'] = (string) ($active[(int) $job['id_job']]['last_error'] ?? '');
             $job['pct'] = $job['total'] > 0 ? (int) round(((int) $job['done'] + (int) $job['failed'] + (int) $job['review']) * 100 / (int) $job['total']) : 0;
         }
         unset($job);
@@ -299,7 +306,9 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         try {
             $stats = (new Worker())->run((int) Settings::get(Settings::BATCH_SIZE), self::TICK_BUDGET);
             $this->json(['ok' => true, 'stats' => $stats]);
-        } catch (ProviderException $e) {
+        } catch (Throwable $e) {
+            // Shown as a toast by the notifier: a silent failure looks like a queue that never moves.
+            PrestaShopLogger::addLog('LinguaFlow AI worker: ' . $e->getMessage(), 3, null, 'linguaflowai');
             $this->json(['ok' => false, 'error' => $e->getMessage()]);
         }
     }

@@ -94,6 +94,8 @@
                   <div class="progress-bar {if $job.failed > 0}progress-bar-warning{else}progress-bar-success{/if}" style="width: {$job.pct|intval}%"></div>
                 </div>
                 <small class="lfai-counts">{$job.done|intval} / {$job.total|intval}{if $job.review > 0} · <span class="text-warning">{$job.review|intval} {l s='to review' mod='linguaflowai'}</span>{/if}{if $job.failed > 0} · <span class="text-danger">{$job.failed|intval} {l s='failed' mod='linguaflowai'}</span>{/if}</small>
+                {if $job.waiting && $job.next_at}<br><small class="text-muted"><i class="icon-time"></i> {l s='Next item at' mod='linguaflowai'} {$job.next_at|escape:'htmlall':'UTF-8'}</small>{/if}
+                {if $job.last_error}<br><small class="text-warning">{$job.last_error|escape:'htmlall':'UTF-8'|truncate:160}</small>{/if}
               </td>
               <td><span class="label label-{if $job.status == 'completed'}success{elseif $job.status == 'running'}info{elseif $job.status == 'cancelled'}default{else}warning{/if}">{$job.status|escape:'htmlall':'UTF-8'}</span></td>
               <td class="text-right">

@@ -41,7 +41,7 @@ class LinguaFlowAI extends Module
     {
         $this->name = 'linguaflowai';
         $this->tab = 'administration';
-        $this->version = '1.1.1';
+        $this->version = '1.1.2';
         $this->author = 'LinguaFlow';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -175,6 +175,8 @@ class LinguaFlowAI extends Module
                 'completedBody' => $this->l('%label%: %done% translated, %review% to review, %failed% failed.'),
                 'toReview' => $this->l('to review'),
                 'progress' => $this->l('Translating'),
+                'waiting' => $this->l('Queued, next at'),
+                'workerError' => $this->l('Translation worker error'),
                 'open' => $this->l('Open'),
                 'bulkAction' => $this->l('Translate with AI (LinguaFlow)'),
                 'noSelection' => $this->l('Select at least one product.'),

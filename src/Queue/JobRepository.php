@@ -39,6 +39,15 @@ class JobRepository
         $this->db = $db ?: \Db::getInstance();
     }
 
+    /**
+     * Current time from PHP. Never compare with MySQL NOW(): PrestaShop sets the PHP time zone to the shop's,
+     * while MySQL usually runs in UTC, and mixing both delays items by hours.
+     */
+    public static function now(int $offsetSeconds = 0): string
+    {
+        return date('Y-m-d H:i:s', time() + $offsetSeconds);
+    }
+
     public static function installSql(): array
     {
         $p = _DB_PREFIX_;
@@ -222,17 +231,17 @@ class JobRepository
         for ($i = 0; $i < 5; ++$i) {
             $row = $this->db->getRow("SELECT i.* FROM `{$p}linguaflowai_item` i
                 INNER JOIN `{$p}linguaflowai_job` j ON j.id_job = i.id_job
-                WHERE i.status = '" . self::ITEM_PENDING . "' AND i.available_at <= NOW()
+                WHERE i.status = '" . self::ITEM_PENDING . "' AND i.available_at <= '" . self::now() . "'
                 AND j.status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "')
                 ORDER BY i.id_item ASC", false);
             if (!$row) {
                 return null;
             }
             $this->db->execute("UPDATE `{$p}linguaflowai_item`
-                SET status = '" . self::ITEM_PROCESSING . "', attempts = attempts + 1, date_upd = NOW()
+                SET status = '" . self::ITEM_PROCESSING . "', attempts = attempts + 1, date_upd = '" . self::now() . "'
                 WHERE id_item = " . (int) $row['id_item'] . " AND status = '" . self::ITEM_PENDING . "'");
             if ($this->db->Affected_Rows() === 1) {
-                $this->db->execute("UPDATE `{$p}linguaflowai_job` SET status = '" . self::JOB_RUNNING . "', date_upd = NOW()
+                $this->db->execute("UPDATE `{$p}linguaflowai_job` SET status = '" . self::JOB_RUNNING . "', date_upd = '" . self::now() . "'
                     WHERE id_job = " . (int) $row['id_job'] . " AND status = '" . self::JOB_QUEUED . "'");
                 $row['attempts'] = (int) $row['attempts'] + 1;
 
@@ -270,7 +279,7 @@ class JobRepository
     public function releaseStale(int $minutes = 15): void
     {
         $this->db->execute('UPDATE `' . _DB_PREFIX_ . "linguaflowai_item` SET status = '" . self::ITEM_PENDING . "'
-            WHERE status = '" . self::ITEM_PROCESSING . "' AND date_upd < DATE_SUB(NOW(), INTERVAL " . (int) $minutes . ' MINUTE)');
+            WHERE status = '" . self::ITEM_PROCESSING . "' AND date_upd < '" . self::now(-60 * $minutes) . "'");
     }
 
     /**
@@ -303,7 +312,7 @@ class JobRepository
         ], 'id_job = ' . $idJob);
 
         if ($counts['open'] === 0 && $counts['total'] > 0) {
-            $this->db->execute("UPDATE `{$p}linguaflowai_job` SET status = '" . self::JOB_COMPLETED . "', date_completed = NOW()
+            $this->db->execute("UPDATE `{$p}linguaflowai_job` SET status = '" . self::JOB_COMPLETED . "', date_completed = '" . self::now() . "'
                 WHERE id_job = " . $idJob . " AND status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "')");
 
             return $this->db->Affected_Rows() === 1;
@@ -430,15 +439,28 @@ class JobRepository
     {
         return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
             INNER JOIN `' . _DB_PREFIX_ . 'linguaflowai_job` j ON j.id_job = i.id_job
-            WHERE i.status = \'' . self::ITEM_PENDING . '\' AND i.available_at <= NOW()
+            WHERE i.status = \'' . self::ITEM_PENDING . '\' AND i.available_at <= \'' . self::now() . '\'
             AND j.status IN (\'' . self::JOB_QUEUED . '\', \'' . self::JOB_RUNNING . '\')');
     }
 
-    /** Jobs still in progress, for the back office progress indicator. */
+    /**
+     * Jobs still in progress, for the back office progress indicator, with when the next item is due
+     * and the last error or waiting reason recorded on its items.
+     */
     public function activeJobs(): array
     {
-        return $this->db->executeS('SELECT id_job, type, label, status, total, done, failed, review FROM `' . _DB_PREFIX_ . "linguaflowai_job`
-            WHERE status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "') ORDER BY id_job") ?: [];
+        $p = _DB_PREFIX_;
+        $jobs = $this->db->executeS("SELECT j.id_job, j.type, j.label, j.status, j.total, j.done, j.failed, j.review,
+                (SELECT MIN(i.available_at) FROM `{$p}linguaflowai_item` i WHERE i.id_job = j.id_job AND i.status = '" . self::ITEM_PENDING . "') next_at,
+                (SELECT i.error FROM `{$p}linguaflowai_item` i WHERE i.id_job = j.id_job AND i.error <> '' AND i.status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_FAILED . "') ORDER BY i.date_upd DESC LIMIT 1) last_error
+            FROM `{$p}linguaflowai_job` j
+            WHERE j.status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "') ORDER BY j.id_job") ?: [];
+        $now = self::now();
+        foreach ($jobs as &$job) {
+            $job['waiting'] = $job['next_at'] !== null && $job['next_at'] > $now;
+        }
+
+        return $jobs;
     }
 
     /**
@@ -451,7 +473,7 @@ class JobRepository
             FROM `{$p}linguaflowai_job` j
             LEFT JOIN `{$p}linguaflowai_notice` n ON n.id_job = j.id_job AND n.id_employee = " . $idEmployee . "
             WHERE j.status = '" . self::JOB_COMPLETED . "' AND n.id_job IS NULL
-            AND j.date_completed > DATE_SUB(NOW(), INTERVAL 7 DAY)
+            AND j.date_completed > '" . self::now(-7 * 86400) . "'
             ORDER BY j.id_job") ?: [];
         foreach ($jobs as $job) {
             $this->db->insert('linguaflowai_notice', [

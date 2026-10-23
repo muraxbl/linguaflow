@@ -132,7 +132,11 @@
       document.body.appendChild(pill);
     }
     pill.href = cfg.dashboardUrl;
-    pill.textContent = cfg.i18n.progress + ' ' + processed + '/' + total;
+    var allWaiting = active.every(function (job) { return job.waiting; });
+    var nextAt = active.map(function (job) { return job.next_at; }).filter(Boolean).sort()[0];
+    pill.textContent = allWaiting && nextAt
+      ? cfg.i18n.waiting + ' ' + nextAt.slice(11, 16) + ' · ' + processed + '/' + total
+      : cfg.i18n.progress + ' ' + processed + '/' + total;
 
     active.forEach(function (job) {
       var row = document.querySelector('#lfai-jobs tr[data-id-job="' + job.id_job + '"]');
@@ -164,17 +168,32 @@
     }).catch(function () { /* session expired or offline: try again later */ });
   }
 
+  var lastWorkerError = '';
+
+  function workerError(message) {
+    // Same error on every tick: show it once, not every 15 seconds.
+    if (message !== lastWorkerError) {
+      lastWorkerError = message;
+      toast(cfg.i18n.workerError, message, 'error');
+    }
+  }
+
   function tick() {
     ticking = true;
     post(cfg.tickUrl).then(function (result) {
       ticking = false;
       if (!result.ok) {
-        toast('LinguaFlow AI', result.error || 'Error', 'error');
+        workerError(result.error || 'Error');
         return;
       }
+      lastWorkerError = '';
       storageSet(LEADER_KEY, TAB_ID + '|' + Date.now());
       poll();
-    }).catch(function () { ticking = false; });
+    }).catch(function (e) {
+      // Not JSON: a PHP fatal error or a timeout of the server.
+      ticking = false;
+      workerError(String(e && e.message ? e.message : e) + ' — see Advanced Parameters > Logs');
+    });
   }
 
   /* --------------------------------------------------------- product panel */
