@@ -10,12 +10,21 @@ if (!defined('_PS_VERSION_')) {
 
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     require_once __DIR__ . '/vendor/autoload.php';
+} else {
+    // The module has no third party dependencies: a PSR-4 loader is enough when vendor/ was not built.
+    spl_autoload_register(function ($class) {
+        if (strpos($class, 'LinguaFlowAI\\') === 0) {
+            $file = __DIR__ . '/src/' . str_replace('\\', '/', substr($class, strlen('LinguaFlowAI\\'))) . '.php';
+            if (file_exists($file)) {
+                require_once $file;
+            }
+        }
+    });
 }
 
 use LinguaFlowAI\Provider\ProviderConfig;
 use LinguaFlowAI\Queue\JobRepository;
 use LinguaFlowAI\Settings;
-use PrestaShop\PrestaShop\Core\Grid\Action\Bulk\Type\SubmitBulkAction;
 
 class LinguaFlowAI extends Module
 {
@@ -35,7 +44,7 @@ class LinguaFlowAI extends Module
         $this->author = 'LinguaFlow';
         $this->need_instance = 0;
         $this->bootstrap = true;
-        $this->ps_versions_compliancy = ['min' => '8.1.0', 'max' => '9.99.99'];
+        $this->ps_versions_compliancy = ['min' => '1.7.6.0', 'max' => '9.99.99'];
 
         parent::__construct();
 
@@ -45,7 +54,6 @@ class LinguaFlowAI extends Module
 
         $this->tabs = [[
             'class_name' => self::ADMIN_CONTROLLER,
-            'route_name' => '',
             'name' => 'LinguaFlow AI',
             'parent_class_name' => 'AdminCatalog',
             'visible' => true,
@@ -55,13 +63,13 @@ class LinguaFlowAI extends Module
 
     public function install()
     {
-        if (PHP_VERSION_ID < 80100) {
-            $this->_errors[] = $this->l('LinguaFlow AI requires PHP 8.1 or newer.');
+        if (PHP_VERSION_ID < 70200) {
+            $this->_errors[] = $this->l('LinguaFlow AI requires PHP 7.2 or newer.');
 
             return false;
         }
-        if (!file_exists(__DIR__ . '/vendor/autoload.php')) {
-            $this->_errors[] = $this->l('Dependencies are missing: run "composer install --no-dev" in the module folder.');
+        if (!function_exists('curl_init')) {
+            $this->_errors[] = $this->l('LinguaFlow AI requires the PHP cURL extension.');
 
             return false;
         }
@@ -87,9 +95,10 @@ class LinguaFlowAI extends Module
 
         return parent::install()
             && $this->registerHook('actionObjectProductAddAfter')
-            && $this->registerHook('actionAdminControllerSetMedia')
-            && $this->registerHook('actionProductGridDefinitionModifier')
-            && $this->registerHook('displayAdminProductsExtra');
+            && $this->registerHook('displayBackOfficeHeader')
+            && $this->registerHook('displayAdminProductsExtra')
+            // Product grid of PrestaShop 8.1+ (ignored by older versions, which get the bulk action through notifier.js).
+            && $this->registerHook('actionProductGridDefinitionModifier');
     }
 
     public function uninstall()
@@ -138,17 +147,20 @@ class LinguaFlowAI extends Module
     }
 
     /**
-     * Loads the notifier (toasts, browser notifications, progress pill, back office worker) on every BO page.
+     * Loads the notifier (toasts, browser notifications, progress pill, back office worker, bulk action of the
+     * legacy product catalog) on every BO page. Printed inline because on the Symfony pages of PrestaShop 1.7
+     * this hook runs after the controller media have been collected.
      */
-    public function hookActionAdminControllerSetMedia()
+    public function hookDisplayBackOfficeHeader()
     {
         if (empty($this->context->employee->id) || !$this->active) {
-            return;
+            return '';
         }
         $link = $this->context->link->getAdminLink(self::ADMIN_CONTROLLER);
-        Media::addJsDef(['linguaflowai' => [
+        $config = [
             'statusUrl' => $link . '&ajax=1&action=status',
             'tickUrl' => $link . '&ajax=1&action=tick',
+            'enqueueUrl' => $link . '&ajax=1&action=enqueueProducts',
             'dashboardUrl' => $link,
             'worker' => (bool) Settings::get(Settings::BO_WORKER),
             'pollInterval' => 15000,
@@ -158,22 +170,29 @@ class LinguaFlowAI extends Module
                 'completedBody' => $this->l('%label%: %done% translated, %failed% failed.'),
                 'progress' => $this->l('Translating'),
                 'open' => $this->l('Open'),
+                'bulkAction' => $this->l('Translate with AI (LinguaFlow)'),
+                'noSelection' => $this->l('Select at least one product.'),
             ],
-        ]]);
-        $this->context->controller->addCSS($this->getPathUri() . 'views/css/admin.css');
-        $this->context->controller->addJS($this->getPathUri() . 'views/js/notifier.js');
+        ];
+        $assets = $this->getPathUri() . 'views/';
+        $version = '?v=' . rawurlencode($this->version);
+
+        return '<link rel="stylesheet" href="' . htmlspecialchars($assets . 'css/admin.css' . $version, ENT_QUOTES) . '">'
+            . '<script>window.linguaflowai = ' . json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>'
+            . '<script src="' . htmlspecialchars($assets . 'js/notifier.js' . $version, ENT_QUOTES) . '" defer></script>';
     }
 
     /**
-     * Adds "Translate with AI" to the bulk actions of the product list (PS 8.1+ product grid).
+     * Adds "Translate with AI" to the bulk actions of the product grid (PrestaShop 8.1+).
      */
     public function hookActionProductGridDefinitionModifier(array $params)
     {
-        if (!class_exists(SubmitBulkAction::class)) {
+        $class = 'PrestaShop\PrestaShop\Core\Grid\Action\Bulk\Type\SubmitBulkAction';
+        if (!class_exists($class)) {
             return;
         }
         $params['definition']->getBulkActions()->add(
-            (new SubmitBulkAction('linguaflowai_translate'))
+            (new $class('linguaflowai_translate'))
                 ->setName($this->l('Translate with AI (LinguaFlow)'))
                 ->setOptions(['submit_route' => 'linguaflowai_bulk_translate'])
         );

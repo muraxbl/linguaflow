@@ -1,5 +1,5 @@
-# Dependencies (bundled at build time by build.sh)
-/vendor/
+# vendor/ is committed on purpose: it only holds Composer's autoloader (the module has no
+# third party dependencies), so installing from a git clone works without running Composer.
 
 # Build output
 /linguaflowai.zip

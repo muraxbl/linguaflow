@@ -187,6 +187,45 @@
     }).catch(function () { button.disabled = false; });
   });
 
+  /* ---------------------------------------- legacy catalog bulk action */
+
+  /**
+   * PrestaShop 1.7.x / 8.0 product catalog has no extensible bulk action list: add our entry to its
+   * "Bulk actions" dropdown. The PrestaShop 8.1+ product grid gets it through a PHP hook instead.
+   */
+  function injectLegacyBulkAction() {
+    var toggle = document.getElementById('product_bulk_menu');
+    var menu = toggle && toggle.parentNode ? toggle.parentNode.querySelector('.dropdown-menu') : null;
+    if (!menu || menu.querySelector('.lfai-bulk-translate')) {
+      return;
+    }
+    var divider = document.createElement('div');
+    divider.className = 'dropdown-divider';
+    var item = document.createElement('a');
+    item.className = 'dropdown-item lfai-bulk-translate';
+    item.href = '#';
+    item.innerHTML = '<i class="material-icons">translate</i> ';
+    item.appendChild(document.createTextNode(cfg.i18n.bulkAction));
+    menu.appendChild(divider);
+    menu.appendChild(item);
+
+    item.addEventListener('click', function (event) {
+      event.preventDefault();
+      var ids = Array.prototype.map.call(
+        document.querySelectorAll('input[name="bulk_action_selected_products[]"]:checked'),
+        function (input) { return input.value; }
+      );
+      if (!ids.length) {
+        toast('LinguaFlow AI', cfg.i18n.noSelection, 'warning');
+        return;
+      }
+      post(cfg.enqueueUrl, { products: ids }).then(function (r) {
+        toast('LinguaFlow AI', r.ok ? r.message : r.error, r.ok ? 'success' : 'error');
+        if (r.ok) { poll(); }
+      });
+    });
+  }
+
   /* ------------------------------------------------- notification opt-in */
 
   document.addEventListener('click', function (event) {
@@ -204,6 +243,11 @@
     });
   });
 
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectLegacyBulkAction);
+  } else {
+    injectLegacyBulkAction();
+  }
   setTimeout(poll, 1500);
   setInterval(poll, cfg.pollInterval || 15000);
 })();

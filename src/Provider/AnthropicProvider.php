@@ -7,111 +7,95 @@
 
 namespace LinguaFlowAI\Provider;
 
-use Anthropic\Client;
-use Anthropic\Core\Exceptions\APIConnectionException;
-use Anthropic\Core\Exceptions\APIStatusException;
-use Anthropic\Core\Exceptions\AuthenticationException;
-use Anthropic\Core\Exceptions\BadRequestException;
-use Anthropic\Core\Exceptions\NotFoundException;
-use Anthropic\Core\Exceptions\RateLimitException;
-
 /**
- * Claude through the official Anthropic PHP SDK.
+ * Claude through the Messages API over raw HTTP. The official PHP SDK needs PHP 8.1,
+ * which PrestaShop 1.7.6 shops often do not have.
  */
 class AnthropicProvider implements ProviderInterface
 {
+    private const API_VERSION = '2026-10-21';
+
     /** Models where the server side refusal fallback ("fallbacks": "default") is available. */
     private const FALLBACK_MODELS = ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5'];
+    private const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
     /** @var ProviderConfig */
     private $config;
-    /** @var Client */
-    private $client;
+    /** @var HttpJsonClient */
+    private $http;
 
-    public function __construct(ProviderConfig $config)
+    public function __construct(ProviderConfig $config, ?HttpJsonClient $http = null)
     {
         if ($config->apiKey === '') {
             throw new ProviderException('An Anthropic API key is required.');
         }
         $this->config = $config;
-        $this->client = new Client(
-            apiKey: $config->apiKey,
-            baseUrl: $config->baseUrl,
-            requestOptions: ['timeout' => (float) $config->timeout, 'maxRetries' => 2],
-        );
+        $this->http = $http ?: new HttpJsonClient($config->timeout);
     }
 
     public function listModels(): array
     {
-        return $this->call(function () {
-            $ids = [];
-            foreach ($this->client->models->list(limit: 100)->pagingEachItem() as $model) {
-                $ids[] = $model->id;
+        $ids = [];
+        $afterId = null;
+        do {
+            $query = '?limit=100' . ($afterId !== null ? '&after_id=' . rawurlencode($afterId) : '');
+            $page = $this->http->request('GET', $this->config->baseUrl . '/v1/models' . $query, $this->headers());
+            foreach ($page['data'] ?? [] as $model) {
+                if (isset($model['id'])) {
+                    $ids[] = (string) $model['id'];
+                }
             }
+            $afterId = !empty($page['has_more']) && !empty($page['last_id']) ? (string) $page['last_id'] : null;
+        } while ($afterId !== null && count($ids) < 1000);
 
-            return $ids;
-        });
+        return $ids;
     }
 
     public function completeJson(string $system, string $user, array $schema): array
     {
-        $params = [
+        $body = [
             'model' => $this->config->model,
-            'maxTokens' => 16000,
+            'max_tokens' => 16000,
             'system' => $system,
             'messages' => [['role' => 'user', 'content' => $user]],
-            'outputConfig' => [
+            'output_config' => [
                 'effort' => $this->config->effort,
                 'format' => ['type' => 'json_schema', 'schema' => $schema],
             ],
         ];
+        $headers = $this->headers();
         if (in_array($this->config->model, self::FALLBACK_MODELS, true)) {
             // A declined request is retried server side on Anthropic's recommended fallback model.
-            $params['betas'] = ['server-side-fallback-2026-07-01'];
-            $params['fallbacks'] = 'default';
+            $headers['anthropic-beta'] = self::FALLBACK_BETA;
+            $body['fallbacks'] = 'default';
         }
 
-        $message = $this->call(function () use ($params) {
-            return $this->client->beta->messages->create(...$params);
-        });
+        $message = $this->http->request('POST', $this->config->baseUrl . '/v1/messages', $headers, $body);
 
-        if ($message->stopReason === 'refusal') {
-            $category = $message->stopDetails !== null ? (string) $message->stopDetails->category : '';
+        $stopReason = $message['stop_reason'] ?? '';
+        if ($stopReason === 'refusal') {
+            $category = (string) ($message['stop_details']['category'] ?? '');
             throw new ProviderException('The model declined to translate this content' . ($category !== '' ? ' (' . $category . ')' : '') . '.');
         }
-        if ($message->stopReason === 'max_tokens') {
+        if ($stopReason === 'max_tokens') {
             throw new ProviderException('The translation was cut off (max_tokens reached). The source text is probably too long.');
         }
 
         $text = '';
-        foreach ($message->content as $block) {
-            if ($block->type === 'text') {
-                $text .= $block->text;
+        foreach ($message['content'] ?? [] as $block) {
+            if (($block['type'] ?? '') === 'text') {
+                $text .= $block['text'];
             }
         }
 
         return JsonExtractor::decode($text);
     }
 
-    /**
-     * Maps SDK exceptions onto ProviderException, keeping the retryable / permanent distinction.
-     */
-    private function call(callable $fn)
+    private function headers(): array
     {
-        try {
-            return $fn();
-        } catch (AuthenticationException $e) {
-            throw new ProviderException('Anthropic rejected the API key: ' . $e->getMessage(), false, $e);
-        } catch (NotFoundException $e) {
-            throw new ProviderException('Unknown model or endpoint: ' . $e->getMessage(), false, $e);
-        } catch (BadRequestException $e) {
-            throw new ProviderException('Invalid request: ' . $e->getMessage(), false, $e);
-        } catch (RateLimitException $e) {
-            throw new ProviderException('Rate limited by Anthropic, will retry later.', true, $e);
-        } catch (APIStatusException $e) {
-            throw new ProviderException('Anthropic API error: ' . $e->getMessage(), ($e->status ?? 500) >= 500, $e);
-        } catch (APIConnectionException $e) {
-            throw new ProviderException('Could not reach the Anthropic API: ' . $e->getMessage(), true, $e);
-        }
+        return [
+            'x-api-key' => $this->config->apiKey,
+            'anthropic-version' => self::API_VERSION,
+        ];
     }
 }

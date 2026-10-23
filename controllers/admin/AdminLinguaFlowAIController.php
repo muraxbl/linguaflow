@@ -252,6 +252,32 @@ class AdminLinguaFlowAIController extends ModuleAdminController
             : ['ok' => false, 'error' => $this->module->l('This product is already queued for these languages.', 'adminlinguaflowaicontroller')]);
     }
 
+    /** Bulk action of the legacy product catalog (PrestaShop 1.7.x / 8.0), injected by notifier.js. */
+    public function ajaxProcessEnqueueProducts()
+    {
+        $productIds = array_values(array_filter(array_map('intval', (array) Tools::getValue('products', []))));
+        $langIds = Settings::targetLanguageIds();
+        if ($langIds === []) {
+            $this->json(['ok' => false, 'error' => $this->module->l('Enable at least one target language in the module settings first.', 'adminlinguaflowaicontroller')]);
+        }
+        if ($productIds === []) {
+            $this->json(['ok' => false, 'error' => $this->module->l('Select at least one product.', 'adminlinguaflowaicontroller')]);
+        }
+
+        $idJob = (new JobRepository())->createJob(
+            JobRepository::TYPE_BULK,
+            sprintf($this->module->l('Product list selection (%d products)', 'adminlinguaflowaicontroller'), count($productIds)),
+            $productIds,
+            $langIds,
+            $this->module->defaultJobOptions(),
+            (int) $this->context->employee->id,
+            (int) $this->context->shop->id
+        );
+        $this->json($idJob
+            ? ['ok' => true, 'id_job' => $idJob, 'message' => sprintf($this->module->l('Job #%d queued: %d products x %d languages. You will be notified when it is done.', 'adminlinguaflowaicontroller'), $idJob, count($productIds), count($langIds))]
+            : ['ok' => false, 'error' => $this->module->l('The selected products are already queued for these languages.', 'adminlinguaflowaicontroller')]);
+    }
+
     private function json(array $data): void
     {
         header('Content-Type: application/json; charset=utf-8');

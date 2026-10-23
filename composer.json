@@ -4,9 +4,10 @@
   "type": "prestashop-module",
   "license": "AFL-3.0",
   "require": {
-    "php": ">=8.1",
-    "anthropic-ai/sdk": "^1.1",
-    "guzzlehttp/guzzle": "^7.4"
+    "php": ">=7.2",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "ext-mbstring": "*"
   },
   "autoload": {
     "psr-4": {
@@ -14,11 +15,7 @@
     }
   },
   "config": {
-    "preferred-install": "dist",
     "prepend-autoloader": false,
-    "optimize-autoloader": true,
-    "allow-plugins": {
-      "php-http/discovery": false
-    }
+    "optimize-autoloader": true
   }
 }

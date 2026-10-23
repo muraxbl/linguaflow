@@ -1,9 +1,9 @@
 # LinguaFlow AI — traducción de catálogo con IA para PrestaShop
 
-Módulo para PrestaShop 8.1+ / 9 que traduce productos con IA:
+Módulo para **PrestaShop 1.7.6 a 9** (PHP 7.2 o superior) que traduce productos con IA:
 
 - **Traducción automática de productos nuevos** a los idiomas que actives (con un retraso configurable para que termines de rellenar la ficha antes de traducir).
-- **Acción masiva en el listado de productos**: selecciona productos → *Acciones masivas* → **Translate with AI (LinguaFlow)**.
+- **Acción masiva en el listado de productos**: selecciona productos → *Acciones masivas* → **Translate with AI (LinguaFlow)**. Funciona en el catálogo clásico (1.7.x / 8.0) y en la nueva lista de productos (8.1+ / 9).
 - **Traducción masiva** desde *Catálogo › LinguaFlow AI*: productos sin traducir, por categoría (con subcategorías), por IDs o el catálogo completo.
 - **Botón "Translate with AI"** en la pestaña *Módulos* de la ficha de producto.
 - **Cola por lotes**: cada trabajo se divide en elementos (producto × idioma) que se procesan poco a poco. Cada producto se actualiza en cuanto llega su traducción. Los errores temporales (límites de uso, caídas de red) se reintentan hasta 3 veces.
@@ -13,7 +13,7 @@ Módulo para PrestaShop 8.1+ / 9 que traduce productos con IA:
 
 | Proveedor | URL base por defecto | API key | Listado de modelos |
 |---|---|---|---|
-| Anthropic (Claude) | `https://api.anthropic.com` | obligatoria | SDK oficial `models->list()` |
+| Anthropic (Claude) | `https://api.anthropic.com` | obligatoria | `GET /v1/models` |
 | OpenAI | `https://api.openai.com/v1` | obligatoria | `GET /models` |
 | Compatible con OpenAI (OpenRouter, Groq, Mistral, LM Studio, vLLM…) | (hay que indicarla) | opcional | `GET /models` |
 | Ollama Cloud | `https://ollama.com` | obligatoria | `GET /api/tags` |
@@ -23,7 +23,7 @@ Módulo para PrestaShop 8.1+ / 9 que traduce productos con IA:
 En la configuración, **Load models** consulta la API del proveedor y rellena un desplegable. Si el proveedor no permite listar modelos, se escribe el nombre a mano.
 
 Notas:
-- **Anthropic** usa el SDK oficial `anthropic-ai/sdk` con salida estructurada (JSON schema) y el nivel de *effort* configurable. Modelo por defecto: `claude-opus-5-5`. En los modelos que lo admiten se activa `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): si el modelo rechaza una petición, Anthropic la repite automáticamente con su modelo de respaldo recomendado.
+- **Anthropic** se llama por HTTP (Messages API, `anthropic-version: 2026-10-21`) porque el SDK oficial de PHP exige PHP 8.1. Usa salida estructurada (JSON schema) y el nivel de *effort* configurable. Modelo por defecto: `claude-opus-5-5`. En los modelos que lo admiten se activa `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): si el modelo rechaza una petición, Anthropic la repite automáticamente con su modelo de respaldo recomendado.
 - **OpenAI** usa `response_format: json_schema` en modo estricto. Los proveedores compatibles y Open WebUI reciben el formato en el prompt y la respuesta se interpreta de forma tolerante (bloques de código, texto alrededor).
 - **Ollama** usa `format` con el JSON schema (Ollama 0.5+).
 
@@ -50,13 +50,13 @@ El HTML de las descripciones se conserva. La traducción se escribe en todas las
 
 ## Instalación
 
-Requisitos: PrestaShop 8.1 o superior, PHP 8.1 o superior y la extensión cURL.
+Requisitos: PrestaShop 1.7.6 o superior, PHP 7.2 o superior y las extensiones cURL, JSON y mbstring. Sin dependencias externas.
 
 ```bash
-./build.sh          # genera linguaflowai.zip con las dependencias de vendor/
+./build.sh          # genera linguaflowai.zip
 ```
 
-Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflowai.zip`. También se puede copiar la carpeta en `modules/linguaflowai` y ejecutar `composer install --no-dev` dentro de ella.
+Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflowai.zip`. También se puede copiar el repositorio en `modules/linguaflowai` (la carpeta debe llamarse así). `vendor/` solo contiene el autoloader de Composer y se incluye en el repositorio, así que no hace falta ejecutar Composer.
 
 ## Hooks para otros módulos
 
@@ -69,11 +69,12 @@ Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflow
 linguaflowai.php                       Módulo: instalación, hooks, configuración
 controllers/admin/AdminLinguaFlowAIController.php   Panel de trabajos + endpoints AJAX
 controllers/front/cron.php             Worker por cron
-src/Provider/                          Anthropic (SDK), OpenAI/compatibles/Open WebUI, Ollama
+src/Provider/                          Anthropic, OpenAI/compatibles/Open WebUI, Ollama (todo por cURL)
 src/Translation/                       Prompt + escritura en product_lang
 src/Queue/                             Trabajos, elementos, worker
-src/Controller/Admin/BulkTranslateController.php    Acción masiva del listado de productos
+src/Controller/Admin/BulkTranslateController.php    Acción masiva de la lista de productos de 8.1+
 views/js/notifier.js                   Toasts, notificaciones nativas, progreso, worker del back office
+                                       y acción masiva del catálogo clásico (1.7.x / 8.0)
 ```
 
 ## Seguridad

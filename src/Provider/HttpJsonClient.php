@@ -47,7 +47,9 @@ class HttpJsonClient
         $raw = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $curlError = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) {
+            curl_close($ch); // no-op since PHP 8.0, deprecated in 8.5
+        }
 
         if ($raw === false) {
             throw new ProviderException('Connection error: ' . $curlError, true);
