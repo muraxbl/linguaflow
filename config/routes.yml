@@ -1,6 +1,0 @@
-linguaflowai_bulk_translate:
-  path: /linguaflowai/bulk-translate
-  methods: [POST]
-  defaults:
-    _controller: 'LinguaFlowAI\Controller\Admin\BulkTranslateController::bulkTranslateAction'
-    _legacy_controller: AdminLinguaFlowAI

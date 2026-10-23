@@ -1,8 +1,0 @@
-services:
-  _defaults:
-    public: true
-
-  LinguaFlowAI\Controller\Admin\BulkTranslateController:
-    autowire: true
-    autoconfigure: true
-    tags: ['controller.service_arguments']

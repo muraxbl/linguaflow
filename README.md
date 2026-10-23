@@ -99,7 +99,9 @@ Requisitos: PrestaShop 1.7.6 o superior, PHP 7.2 o superior y las extensiones cU
 ./build.sh          # genera linguaflowai.zip
 ```
 
-Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflowai.zip`. También se puede copiar el repositorio en `modules/linguaflowai` (la carpeta debe llamarse así). `vendor/` solo contiene el autoloader de Composer y se incluye en el repositorio, así que no hace falta ejecutar Composer.
+Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflowai.zip`.
+
+> El zip que genera GitHub ("Download ZIP") **no sirve**: contiene la carpeta `linguaflow-main/` y PrestaShop exige que el zip tenga dentro una carpeta llamada exactamente `linguaflowai/`. Usa `build.sh`. También se puede copiar el repositorio en `modules/linguaflowai` (la carpeta debe llamarse así). `vendor/` solo contiene el autoloader de Composer y se incluye en el repositorio, así que no hace falta ejecutar Composer.
 
 ## Hooks para otros módulos
 
@@ -117,9 +119,8 @@ src/Provider/                          Anthropic, OpenAI/compatibles/Open WebUI,
 src/Translation/                       Motor: HTML y marcadores, glosario, términos protegidos,
                                        prompt, QA, memoria, traducción por producto y escritura
 src/Queue/                             Trabajos, elementos, worker
-src/Controller/Admin/BulkTranslateController.php    Acción masiva de la lista de productos de 8.1+
 views/js/notifier.js                   Toasts, notificaciones nativas, progreso, worker del back office
-                                       y acción masiva del catálogo clásico (1.7.x / 8.0)
+                                       y acción masiva del listado de productos (1.7.x a 9)
 ```
 
 ## Seguridad

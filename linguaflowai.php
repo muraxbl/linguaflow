@@ -41,7 +41,7 @@ class LinguaFlowAI extends Module
     {
         $this->name = 'linguaflowai';
         $this->tab = 'administration';
-        $this->version = '1.1.0';
+        $this->version = '1.1.1';
         $this->author = 'LinguaFlow';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -102,9 +102,7 @@ class LinguaFlowAI extends Module
         return parent::install()
             && $this->registerHook('actionObjectProductAddAfter')
             && $this->registerHook('displayBackOfficeHeader')
-            && $this->registerHook('displayAdminProductsExtra')
-            // Product grid of PrestaShop 8.1+ (ignored by older versions, which get the bulk action through notifier.js).
-            && $this->registerHook('actionProductGridDefinitionModifier');
+            && $this->registerHook('displayAdminProductsExtra');
     }
 
     public function uninstall()
@@ -153,8 +151,9 @@ class LinguaFlowAI extends Module
     }
 
     /**
-     * Loads the notifier (toasts, browser notifications, progress pill, back office worker, bulk action of the
-     * legacy product catalog) on every BO page. Printed inline because on the Symfony pages of PrestaShop 1.7
+     * Loads the notifier (toasts, browser notifications, progress pill, back office worker and the "Translate with AI"
+     * bulk action of the product list) on every BO page. The bulk action is added in JavaScript on purpose: a Symfony
+     * route/controller would need a service definition that breaks the whole back office when it cannot be loaded. Printed inline because on the Symfony pages of PrestaShop 1.7
      * this hook runs after the controller media have been collected.
      */
     public function hookDisplayBackOfficeHeader()
@@ -187,22 +186,6 @@ class LinguaFlowAI extends Module
         return '<link rel="stylesheet" href="' . htmlspecialchars($assets . 'css/admin.css' . $version, ENT_QUOTES) . '">'
             . '<script>window.linguaflowai = ' . json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>'
             . '<script src="' . htmlspecialchars($assets . 'js/notifier.js' . $version, ENT_QUOTES) . '" defer></script>';
-    }
-
-    /**
-     * Adds "Translate with AI" to the bulk actions of the product grid (PrestaShop 8.1+).
-     */
-    public function hookActionProductGridDefinitionModifier(array $params)
-    {
-        $class = 'PrestaShop\PrestaShop\Core\Grid\Action\Bulk\Type\SubmitBulkAction';
-        if (!class_exists($class)) {
-            return;
-        }
-        $params['definition']->getBulkActions()->add(
-            (new $class('linguaflowai_translate'))
-                ->setName($this->l('Translate with AI (LinguaFlow)'))
-                ->setOptions(['submit_route' => 'linguaflowai_bulk_translate'])
-        );
     }
 
     /**

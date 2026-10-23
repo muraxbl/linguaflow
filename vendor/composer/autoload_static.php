@@ -22,7 +22,6 @@ class ComposerStaticInit5c42bf7adc829848dbec18663b599700
 
     public static $classMap = array (
         'Composer\\InstalledVersions' => __DIR__ . '/..' . '/composer/InstalledVersions.php',
-        'LinguaFlowAI\\Controller\\Admin\\BulkTranslateController' => __DIR__ . '/../..' . '/src/Controller/Admin/BulkTranslateController.php',
         'LinguaFlowAI\\Provider\\AnthropicProvider' => __DIR__ . '/../..' . '/src/Provider/AnthropicProvider.php',
         'LinguaFlowAI\\Provider\\HttpJsonClient' => __DIR__ . '/../..' . '/src/Provider/HttpJsonClient.php',
         'LinguaFlowAI\\Provider\\OllamaProvider' => __DIR__ . '/../..' . '/src/Provider/OllamaProvider.php',

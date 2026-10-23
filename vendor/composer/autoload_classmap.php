@@ -7,7 +7,6 @@ $baseDir = dirname($vendorDir);
 
 return array(
     'Composer\\InstalledVersions' => $vendorDir . '/composer/InstalledVersions.php',
-    'LinguaFlowAI\\Controller\\Admin\\BulkTranslateController' => $baseDir . '/src/Controller/Admin/BulkTranslateController.php',
     'LinguaFlowAI\\Provider\\AnthropicProvider' => $baseDir . '/src/Provider/AnthropicProvider.php',
     'LinguaFlowAI\\Provider\\HttpJsonClient' => $baseDir . '/src/Provider/HttpJsonClient.php',
     'LinguaFlowAI\\Provider\\OllamaProvider' => $baseDir . '/src/Provider/OllamaProvider.php',

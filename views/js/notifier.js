@@ -201,41 +201,56 @@
     }).catch(function () { button.disabled = false; });
   });
 
-  /* ---------------------------------------- legacy catalog bulk action */
+  /* -------------------------------------------- product list bulk action */
 
   /**
-   * PrestaShop 1.7.x / 8.0 product catalog has no extensible bulk action list: add our entry to its
-   * "Bulk actions" dropdown. The PrestaShop 8.1+ product grid gets it through a PHP hook instead.
+   * Adds "Translate with AI" to the "Bulk actions" dropdown of the product list:
+   *  - legacy catalog (PrestaShop 1.7.x / 8.0): #product_bulk_menu, checkboxes bulk_action_selected_products[]
+   *  - product grid (PrestaShop 8.1+ / 9): [data-grid-id="product"] .js-bulk-actions-btn, checkboxes product_bulk[]
+   * Done in JavaScript on purpose: a Symfony route/controller needs a service definition, and when it cannot
+   * be loaded the whole back office fails.
    */
-  function injectLegacyBulkAction() {
-    var toggle = document.getElementById('product_bulk_menu');
-    var menu = toggle && toggle.parentNode ? toggle.parentNode.querySelector('.dropdown-menu') : null;
-    if (!menu || menu.querySelector('.lfai-bulk-translate')) {
-      return;
+  var BULK_TARGETS = [
+    {
+      toggle: '#product_bulk_menu',
+      checked: 'input[name="bulk_action_selected_products[]"]:checked'
+    },
+    {
+      toggle: '[data-grid-id="product"] .js-bulk-actions-btn, #product_grid_panel .js-bulk-actions-btn',
+      checked: '[data-grid-id="product"] input.js-bulk-action-checkbox:checked, input[name="product_bulk[]"]:checked'
     }
-    var divider = document.createElement('div');
-    divider.className = 'dropdown-divider';
-    var item = document.createElement('a');
-    item.className = 'dropdown-item lfai-bulk-translate';
-    item.href = '#';
-    item.innerHTML = '<i class="material-icons">translate</i> ';
-    item.appendChild(document.createTextNode(cfg.i18n.bulkAction));
-    menu.appendChild(divider);
-    menu.appendChild(item);
+  ];
 
-    item.addEventListener('click', function (event) {
-      event.preventDefault();
-      var ids = Array.prototype.map.call(
-        document.querySelectorAll('input[name="bulk_action_selected_products[]"]:checked'),
-        function (input) { return input.value; }
-      );
-      if (!ids.length) {
-        toast('LinguaFlow AI', cfg.i18n.noSelection, 'warning');
+  function injectBulkAction() {
+    BULK_TARGETS.forEach(function (target) {
+      var toggle = document.querySelector(target.toggle);
+      var menu = toggle && toggle.parentNode ? toggle.parentNode.querySelector('.dropdown-menu') : null;
+      if (!menu || menu.querySelector('.lfai-bulk-translate')) {
         return;
       }
-      post(cfg.enqueueUrl, { products: ids }).then(function (r) {
-        toast('LinguaFlow AI', r.ok ? r.message : r.error, r.ok ? 'success' : 'error');
-        if (r.ok) { poll(); }
+      var divider = document.createElement('div');
+      divider.className = 'dropdown-divider';
+      var item = document.createElement('a');
+      item.className = 'dropdown-item lfai-bulk-translate';
+      item.href = '#';
+      item.innerHTML = '<i class="material-icons">translate</i> ';
+      item.appendChild(document.createTextNode(cfg.i18n.bulkAction));
+      menu.appendChild(divider);
+      menu.appendChild(item);
+
+      item.addEventListener('click', function (event) {
+        event.preventDefault();
+        var ids = Array.prototype.map.call(document.querySelectorAll(target.checked), function (input) {
+          return input.value;
+        }).filter(function (id, i, all) { return id && all.indexOf(id) === i; });
+        if (!ids.length) {
+          toast('LinguaFlow AI', cfg.i18n.noSelection, 'warning');
+          return;
+        }
+        post(cfg.enqueueUrl, { products: ids }).then(function (r) {
+          toast('LinguaFlow AI', r.ok ? r.message : r.error, r.ok ? 'success' : 'error');
+          if (r.ok) { poll(); }
+        });
       });
     });
   }
@@ -258,9 +273,9 @@
   });
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectLegacyBulkAction);
+    document.addEventListener('DOMContentLoaded', injectBulkAction);
   } else {
-    injectLegacyBulkAction();
+    injectBulkAction();
   }
   setTimeout(poll, 1500);
   setInterval(poll, cfg.pollInterval || 15000);
