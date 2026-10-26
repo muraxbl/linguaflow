@@ -7,6 +7,8 @@
 
 namespace LinguaFlowAI\Provider;
 
+use LinguaFlowAI\Security\ProviderUrl;
+
 final class ProviderConfig
 {
     public const ANTHROPIC = 'anthropic';
@@ -59,7 +61,19 @@ final class ProviderConfig
         }
         $this->provider = $provider;
         $this->apiKey = trim($apiKey);
+        if (preg_match('/[\x00-\x20\x7f]/', $this->apiKey)) {
+            throw new ProviderException('API keys cannot contain whitespace or control characters.');
+        }
         $this->baseUrl = rtrim(trim($baseUrl) !== '' ? trim($baseUrl) : self::DEFAULTS[$provider]['base_url'], '/');
+        if ($this->baseUrl !== '') {
+            ProviderUrl::validate($this->baseUrl, true);
+            ProviderUrl::validateCredentials($this->baseUrl, $this->apiKey !== '');
+        }
+        // Cloud credentials must only be sent to the provider's official HTTPS endpoint.
+        if (in_array($provider, [self::ANTHROPIC, self::OPENAI, self::OLLAMA_CLOUD], true)
+            && $this->baseUrl !== self::DEFAULTS[$provider]['base_url']) {
+            throw new ProviderException('Use the official cloud URL, or select a self-hosted / OpenAI compatible provider.');
+        }
         $this->model = trim($model) !== '' ? trim($model) : self::DEFAULTS[$provider]['model'];
         $this->effort = $effort;
         $this->timeout = $timeout;

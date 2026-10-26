@@ -34,9 +34,41 @@ class JobRepository
     /** @var \Db */
     private $db;
 
-    public function __construct(?\Db $db = null)
+    /** Null is reserved for trusted cron/internal workers; an empty list grants no shop access. */
+    private $shopIds;
+
+    public function __construct(?\Db $db = null, ?array $shopIds = null)
     {
         $this->db = $db ?: \Db::getInstance();
+        $this->shopIds = $shopIds === null ? null : array_values(array_unique(array_filter(array_map('intval', $shopIds), function ($id) { return $id > 0; })));
+    }
+
+    private function shopFilter(string $alias = ''): string
+    {
+        return $this->shopIds === null ? '' : ' AND ' . $alias . 'id_shop IN (' . implode(',', $this->shopIds ?: [0]) . ')';
+    }
+
+    private function assertJob(int $idJob): void
+    {
+        if (!$this->getJob($idJob)) {
+            throw new \DomainException('Job not found in an authorized shop.');
+        }
+    }
+
+    private function normalizeSelection(array $productIds, array $langIds, int $idShop): array
+    {
+        if ($idShop < 1 || ($this->shopIds !== null && !in_array($idShop, $this->shopIds, true))) {
+            throw new \DomainException('Unauthorized shop.');
+        }
+        $productIds = array_values(array_unique(array_filter(array_map('intval', $productIds), function ($id) { return $id > 0; })));
+        $langIds = array_values(array_unique(array_filter(array_map('intval', $langIds), function ($id) { return $id > 0; })));
+        $products = [];
+        foreach (array_chunk($productIds, 200) as $chunk) {
+            $rows = $this->db->executeS('SELECT id_product FROM `' . _DB_PREFIX_ . 'product_shop` WHERE id_shop = ' . $idShop . ' AND id_product IN (' . implode(',', $chunk) . ')') ?: [];
+            $products = array_merge($products, array_map('intval', array_column($rows, 'id_product')));
+        }
+        $allowedLangs = array_map('intval', array_column($this->db->executeS('SELECT id_lang FROM `' . _DB_PREFIX_ . 'lang_shop` WHERE id_shop = ' . $idShop) ?: [], 'id_lang'));
+        return [$products, array_values(array_intersect($langIds, $allowedLangs))];
     }
 
     /**
@@ -141,8 +173,8 @@ class JobRepository
      */
     public function createJob(string $type, string $label, array $productIds, array $langIds, array $options, int $idEmployee, int $idShop, int $delaySeconds = 0): int
     {
-        $productIds = array_values(array_unique(array_filter(array_map('intval', $productIds))));
-        $langIds = array_values(array_unique(array_filter(array_map('intval', $langIds))));
+        list($productIds, $langIds) = $this->normalizeSelection($productIds, $langIds, $idShop);
+        $langIds = array_values(array_diff($langIds, [(int) ($options['source_lang'] ?? 0)]));
         if ($productIds === [] || $langIds === []) {
             return 0;
         }
@@ -160,7 +192,7 @@ class JobRepository
         ]);
         $idJob = (int) $this->db->Insert_ID();
 
-        $added = $this->addItems($idJob, $productIds, $langIds, $delaySeconds);
+        $added = $this->addItems($idJob, $productIds, $langIds, $delaySeconds, $idShop);
         if ($added === 0) {
             $this->db->delete('linguaflowai_job', 'id_job = ' . $idJob);
 
@@ -175,6 +207,11 @@ class JobRepository
      */
     public function enqueueAuto(array $productIds, array $langIds, array $options, int $idShop, int $delaySeconds, string $label): int
     {
+        list($productIds, $langIds) = $this->normalizeSelection($productIds, $langIds, $idShop);
+        $langIds = array_values(array_diff($langIds, [(int) ($options['source_lang'] ?? 0)]));
+        if (!$productIds || !$langIds) {
+            return 0;
+        }
         $idJob = (int) $this->db->getValue('SELECT id_job FROM `' . _DB_PREFIX_ . 'linguaflowai_job`
             WHERE type = \'' . self::TYPE_AUTO . '\' AND id_shop = ' . (int) $idShop . '
             AND status IN (\'' . self::JOB_QUEUED . '\', \'' . self::JOB_RUNNING . '\')
@@ -182,12 +219,12 @@ class JobRepository
         if (!$idJob) {
             return $this->createJob(self::TYPE_AUTO, $label, $productIds, $langIds, $options, 0, $idShop, $delaySeconds);
         }
-        $this->addItems($idJob, $productIds, $langIds, $delaySeconds);
+        $this->addItems($idJob, $productIds, $langIds, $delaySeconds, $idShop);
 
         return $idJob;
     }
 
-    private function addItems(int $idJob, array $productIds, array $langIds, int $delaySeconds): int
+    private function addItems(int $idJob, array $productIds, array $langIds, int $delaySeconds, int $idShop): int
     {
         $p = _DB_PREFIX_;
         $now = date('Y-m-d H:i:s');
@@ -196,9 +233,10 @@ class JobRepository
 
         foreach (array_chunk($productIds, 200) as $chunk) {
             $busy = [];
-            $rows = $this->db->executeS("SELECT id_product, id_lang FROM `{$p}linguaflowai_item`
-                WHERE id_product IN (" . implode(',', $chunk) . ")
-                AND status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_PROCESSING . "', '" . self::ITEM_REVIEW . "')") ?: [];
+            $rows = $this->db->executeS("SELECT i.id_product, i.id_lang FROM `{$p}linguaflowai_item` i
+                INNER JOIN `{$p}linguaflowai_job` j ON j.id_job = i.id_job
+                WHERE j.id_shop = {$idShop} AND i.id_product IN (" . implode(',', $chunk) . ")
+                AND i.status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_PROCESSING . "', '" . self::ITEM_REVIEW . "')") ?: [];
             foreach ($rows as $row) {
                 $busy[$row['id_product'] . '-' . $row['id_lang']] = true;
             }
@@ -233,7 +271,7 @@ class JobRepository
                 INNER JOIN `{$p}linguaflowai_job` j ON j.id_job = i.id_job
                 WHERE i.status = '" . self::ITEM_PENDING . "' AND i.available_at <= '" . self::now() . "'
                 AND j.status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "')
-                ORDER BY i.id_item ASC", false);
+                " . $this->shopFilter('j.') . " ORDER BY i.id_item ASC", false);
             if (!$row) {
                 return null;
             }
@@ -278,8 +316,9 @@ class JobRepository
     /** Puts back items whose worker died mid-request. */
     public function releaseStale(int $minutes = 15): void
     {
-        $this->db->execute('UPDATE `' . _DB_PREFIX_ . "linguaflowai_item` SET status = '" . self::ITEM_PENDING . "'
-            WHERE status = '" . self::ITEM_PROCESSING . "' AND date_upd < '" . self::now(-60 * $minutes) . "'");
+        $this->db->execute('UPDATE `' . _DB_PREFIX_ . 'linguaflowai_item` i
+            INNER JOIN `' . _DB_PREFIX_ . "linguaflowai_job` j ON j.id_job = i.id_job SET i.status = '" . self::ITEM_PENDING . "'
+            WHERE i.status = '" . self::ITEM_PROCESSING . "' AND i.date_upd < '" . self::now(-60 * $minutes) . "'" . $this->shopFilter('j.'));
     }
 
     /**
@@ -323,7 +362,7 @@ class JobRepository
 
     public function getJob(int $idJob): ?array
     {
-        $job = $this->db->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_job` WHERE id_job = ' . $idJob, false);
+        $job = $this->db->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_job` WHERE id_job = ' . $idJob . $this->shopFilter(), false);
         if (!$job) {
             return null;
         }
@@ -334,26 +373,29 @@ class JobRepository
 
     public function listJobs(int $limit = 50): array
     {
-        return $this->db->executeS('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_job` ORDER BY id_job DESC LIMIT ' . (int) $limit) ?: [];
+        return $this->db->executeS('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_job` WHERE 1' . $this->shopFilter() . ' ORDER BY id_job DESC LIMIT ' . (int) $limit) ?: [];
     }
 
     public function failedItems(int $idJob, int $limit = 200): array
     {
         return $this->db->executeS('SELECT i.*, pl.name product_name, l.iso_code FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
-            LEFT JOIN `' . _DB_PREFIX_ . 'product_lang` pl ON pl.id_product = i.id_product AND pl.id_lang = ' . (int) \Configuration::get('PS_LANG_DEFAULT') . ' AND pl.id_shop = ' . (int) \Configuration::get('PS_SHOP_DEFAULT') . '
+            INNER JOIN `' . _DB_PREFIX_ . 'linguaflowai_job` j ON j.id_job = i.id_job
+            LEFT JOIN `' . _DB_PREFIX_ . 'product_lang` pl ON pl.id_product = i.id_product AND pl.id_lang = ' . (int) \Configuration::get('PS_LANG_DEFAULT') . ' AND pl.id_shop = j.id_shop
             LEFT JOIN `' . _DB_PREFIX_ . 'lang` l ON l.id_lang = i.id_lang
             WHERE i.id_job = ' . $idJob . " AND i.status = '" . self::ITEM_FAILED . "'
-            ORDER BY i.id_item LIMIT " . (int) $limit) ?: [];
+            " . $this->shopFilter('j.') . " ORDER BY i.id_item LIMIT " . (int) $limit) ?: [];
     }
 
     public function cancelJob(int $idJob): void
     {
+        $this->assertJob($idJob);
         $this->db->update('linguaflowai_item', ['status' => self::ITEM_SKIPPED, 'error' => 'Cancelled'], 'id_job = ' . $idJob . " AND status = '" . self::ITEM_PENDING . "'");
         $this->db->update('linguaflowai_job', ['status' => self::JOB_CANCELLED, 'date_upd' => date('Y-m-d H:i:s')], 'id_job = ' . $idJob . " AND status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "')");
     }
 
     public function retryFailed(int $idJob): void
     {
+        $this->assertJob($idJob);
         $this->db->update('linguaflowai_item', [
             'status' => self::ITEM_PENDING,
             'attempts' => 0,
@@ -369,6 +411,7 @@ class JobRepository
 
     public function deleteJob(int $idJob): void
     {
+        $this->assertJob($idJob);
         $this->db->delete('linguaflowai_item', 'id_job = ' . $idJob);
         $this->db->delete('linguaflowai_notice', 'id_job = ' . $idJob);
         $this->db->delete('linguaflowai_job', 'id_job = ' . $idJob);
@@ -387,7 +430,7 @@ class JobRepository
 
     public function getItem(int $idItem): ?array
     {
-        $item = $this->db->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'linguaflowai_item` WHERE id_item = ' . $idItem, false);
+        $item = $this->db->getRow('SELECT i.* FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i INNER JOIN `' . _DB_PREFIX_ . 'linguaflowai_job` j ON j.id_job = i.id_job WHERE i.id_item = ' . $idItem . $this->shopFilter('j.'), false);
         if (!$item) {
             return null;
         }
@@ -398,16 +441,17 @@ class JobRepository
 
     public function countReview(): int
     {
-        return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . "linguaflowai_item` WHERE status = '" . self::ITEM_REVIEW . "'");
+        return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . "linguaflowai_item` i INNER JOIN `" . _DB_PREFIX_ . "linguaflowai_job` j ON j.id_job = i.id_job WHERE i.status = '" . self::ITEM_REVIEW . "'" . $this->shopFilter('j.'));
     }
 
     /** Items waiting for review, oldest first, with product name and language. */
     public function reviewItems(int $limit, int $offset = 0): array
     {
-        $rows = $this->db->executeS('SELECT i.*, l.name lang_name, l.iso_code FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
+        $rows = $this->db->executeS('SELECT i.*, j.id_shop, l.name lang_name, l.iso_code FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
+            INNER JOIN `' . _DB_PREFIX_ . 'linguaflowai_job` j ON j.id_job = i.id_job
             LEFT JOIN `' . _DB_PREFIX_ . "lang` l ON l.id_lang = i.id_lang
             WHERE i.status = '" . self::ITEM_REVIEW . "'
-            ORDER BY i.id_item LIMIT " . (int) $offset . ', ' . (int) $limit) ?: [];
+            " . $this->shopFilter('j.') . " ORDER BY i.id_item LIMIT " . (int) $offset . ', ' . (int) $limit) ?: [];
         foreach ($rows as &$row) {
             $row['payload'] = json_decode((string) $row['payload'], true) ?: [];
         }
@@ -440,7 +484,7 @@ class JobRepository
         return (int) $this->db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'linguaflowai_item` i
             INNER JOIN `' . _DB_PREFIX_ . 'linguaflowai_job` j ON j.id_job = i.id_job
             WHERE i.status = \'' . self::ITEM_PENDING . '\' AND i.available_at <= \'' . self::now() . '\'
-            AND j.status IN (\'' . self::JOB_QUEUED . '\', \'' . self::JOB_RUNNING . '\')');
+            AND j.status IN (\'' . self::JOB_QUEUED . '\', \'' . self::JOB_RUNNING . '\')' . $this->shopFilter('j.'));
     }
 
     /**
@@ -450,11 +494,11 @@ class JobRepository
     public function activeJobs(): array
     {
         $p = _DB_PREFIX_;
-        $jobs = $this->db->executeS("SELECT j.id_job, j.type, j.label, j.status, j.total, j.done, j.failed, j.review,
+        $jobs = $this->db->executeS("SELECT j.id_job, j.id_shop, j.type, j.label, j.status, j.total, j.done, j.failed, j.review,
                 (SELECT MIN(i.available_at) FROM `{$p}linguaflowai_item` i WHERE i.id_job = j.id_job AND i.status = '" . self::ITEM_PENDING . "') next_at,
                 (SELECT i.error FROM `{$p}linguaflowai_item` i WHERE i.id_job = j.id_job AND i.error <> '' AND i.status IN ('" . self::ITEM_PENDING . "', '" . self::ITEM_FAILED . "') ORDER BY i.date_upd DESC LIMIT 1) last_error
             FROM `{$p}linguaflowai_job` j
-            WHERE j.status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "') ORDER BY j.id_job") ?: [];
+            WHERE j.status IN ('" . self::JOB_QUEUED . "', '" . self::JOB_RUNNING . "') " . $this->shopFilter('j.') . " ORDER BY j.id_job") ?: [];
         $now = self::now();
         foreach ($jobs as &$job) {
             $job['waiting'] = $job['next_at'] !== null && $job['next_at'] > $now;
@@ -474,7 +518,7 @@ class JobRepository
             LEFT JOIN `{$p}linguaflowai_notice` n ON n.id_job = j.id_job AND n.id_employee = " . $idEmployee . "
             WHERE j.status = '" . self::JOB_COMPLETED . "' AND n.id_job IS NULL
             AND j.date_completed > '" . self::now(-7 * 86400) . "'
-            ORDER BY j.id_job") ?: [];
+            " . $this->shopFilter('j.') . " ORDER BY j.id_job") ?: [];
         foreach ($jobs as $job) {
             $this->db->insert('linguaflowai_notice', [
                 'id_job' => (int) $job['id_job'],

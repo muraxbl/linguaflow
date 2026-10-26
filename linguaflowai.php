@@ -25,6 +25,8 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 use LinguaFlowAI\Provider\ProviderConfig;
 use LinguaFlowAI\Queue\JobRepository;
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Security\AdminAccess;
+use LinguaFlowAI\Security\ShopScope;
 
 class LinguaFlowAI extends Module
 {
@@ -41,7 +43,7 @@ class LinguaFlowAI extends Module
     {
         $this->name = 'linguaflowai';
         $this->tab = 'administration';
-        $this->version = '1.1.2';
+        $this->version = '1.2.0';
         $this->author = 'LinguaFlow';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -136,14 +138,21 @@ class LinguaFlowAI extends Module
         }
 
         try {
-            (new JobRepository())->enqueueAuto(
-                [(int) $params['object']->id],
-                $langIds,
-                $this->defaultJobOptions(),
-                (int) $this->context->shop->id,
-                60 * (int) Settings::get(Settings::AUTO_DELAY),
-                $this->l('New products (automatic)')
-            );
+            $shops = [(int) $this->context->shop->id];
+            if (Settings::get(Settings::SHOP_SCOPE) !== ShopScope::ALL && Shop::getContext() !== Shop::CONTEXT_SHOP) {
+                throw new DomainException('Automatic translations in context mode require a single shop context.');
+            }
+            if (Settings::get(Settings::SHOP_SCOPE) === ShopScope::ALL) {
+                $shops = array_map('intval', array_column(Db::getInstance()->executeS('SELECT id_shop FROM `' . _DB_PREFIX_ . 'product_shop` WHERE id_product = ' . (int) $params['object']->id) ?: [], 'id_shop'));
+                $shops = array_values(array_intersect($shops, array_map('intval', Shop::getShops(true, null, true))));
+                if (!empty($this->context->employee->id)) {
+                    $shops = array_values(array_intersect($shops, ShopScope::authorizedIds()));
+                }
+            }
+            foreach ($shops as $idShop) {
+                (new JobRepository())->enqueueAuto([(int) $params['object']->id], $langIds, $this->defaultJobOptions(), $idShop,
+                    60 * (int) Settings::get(Settings::AUTO_DELAY), $this->l('New products (automatic)'));
+            }
         } catch (Throwable $e) {
             // Never break product creation because of the translation queue.
             PrestaShopLogger::addLog('LinguaFlow AI: could not queue product: ' . $e->getMessage(), 2, null, 'linguaflowai');
@@ -158,7 +167,8 @@ class LinguaFlowAI extends Module
      */
     public function hookDisplayBackOfficeHeader()
     {
-        if (empty($this->context->employee->id) || !$this->active) {
+        if (empty($this->context->employee->id) || !$this->active
+            || !Access::isGranted('ROLE_MOD_TAB_ADMINLINGUAFLOWAI_READ', (int) $this->context->employee->id_profile)) {
             return '';
         }
         $link = $this->context->link->getAdminLink(self::ADMIN_CONTROLLER);
@@ -167,7 +177,8 @@ class LinguaFlowAI extends Module
             'tickUrl' => $link . '&ajax=1&action=tick',
             'enqueueUrl' => $link . '&ajax=1&action=enqueueProducts',
             'dashboardUrl' => $link,
-            'worker' => (bool) Settings::get(Settings::BO_WORKER),
+            'worker' => (bool) Settings::get(Settings::BO_WORKER) && Access::isGranted(['ROLE_MOD_TAB_ADMINLINGUAFLOWAI_UPDATE', 'ROLE_MOD_TAB_ADMINPRODUCTS_UPDATE'], (int) $this->context->employee->id_profile),
+            'shopScope' => (string) Settings::get(Settings::SHOP_SCOPE),
             'pollInterval' => 15000,
             'icon' => $this->getPathUri() . 'logo.png',
             'i18n' => [
@@ -204,6 +215,7 @@ class LinguaFlowAI extends Module
             'lfai_languages' => $this->targetLanguageChoices(),
             'lfai_enqueue_url' => $this->context->link->getAdminLink(self::ADMIN_CONTROLLER) . '&ajax=1&action=enqueueProduct',
             'lfai_configured' => Settings::targetLanguageIds() !== [],
+            'lfai_shop_scope' => (string) Settings::get(Settings::SHOP_SCOPE),
             'lfai_config_url' => $this->context->link->getAdminLink('AdminModules', true, [], ['configure' => $this->name]),
         ]);
 
@@ -216,7 +228,15 @@ class LinguaFlowAI extends Module
 
     public function getContent()
     {
+        if (!AdminAccess::allows($this->context->controller, 'edit', false, true)) {
+            http_response_code(403);
+            return $this->displayError($this->l('Global module configuration requires configuration privileges and access to every shop.'));
+        }
         $output = '';
+        if (Tools::isSubmit('submitLinguaFlowAI') && !AdminAccess::isPost()) {
+            http_response_code(405);
+            return $this->displayError($this->l('Use POST to save settings.'));
+        }
         if (Tools::isSubmit('submitLinguaFlowAI')) {
             $errors = $this->saveConfiguration();
             $output .= $errors ? $this->displayError($errors) : $this->displayConfirmation($this->l('Settings saved.'));
@@ -231,6 +251,7 @@ class LinguaFlowAI extends Module
             'lfai_providers' => ProviderConfig::LABELS,
             'lfai_provider_defaults' => json_encode(ProviderConfig::DEFAULTS),
             'lfai_provider' => $provider,
+            'lfai_shop_scope' => (string) Settings::get(Settings::SHOP_SCOPE),
             'lfai_has_key' => (string) Settings::get(Settings::API_KEY) !== '',
             'lfai_base_url' => (string) Settings::get(Settings::BASE_URL),
             'lfai_model' => (string) Settings::get(Settings::MODEL),
@@ -271,30 +292,30 @@ class LinguaFlowAI extends Module
 
         $previousProvider = (string) Settings::get(Settings::PROVIDER);
         $apiKey = trim((string) Tools::getValue('LFAI_API_KEY'));
-        if ($apiKey !== '') {
-            Settings::set(Settings::API_KEY, $apiKey);
-        } elseif (Tools::getValue('LFAI_API_KEY_CLEAR') || $previousProvider !== $provider) {
-            // A key belongs to one provider; switching providers without a new key clears it.
-            Settings::set(Settings::API_KEY, '');
-        }
-
         $baseUrl = trim((string) Tools::getValue('LFAI_BASE_URL'));
-        if ($baseUrl !== '' && !Validate::isAbsoluteUrl($baseUrl)) {
-            $errors[] = $this->l('The base URL is not valid.');
-        }
-        if ($provider === ProviderConfig::OPENAI_COMPATIBLE && $baseUrl === '') {
-            $errors[] = $this->l('OpenAI compatible providers need a base URL (for example https://openrouter.ai/api/v1).');
-        }
-        if (ProviderConfig::DEFAULTS[$provider]['needs_key'] && $apiKey === '' && (string) Settings::get(Settings::API_KEY) === '') {
-            $errors[] = $this->l('This provider needs an API key.');
-        }
-
         $model = trim((string) Tools::getValue('LFAI_MODEL'));
-        if ($model === '') {
-            $errors[] = $this->l('Choose or type a model.');
+        try {
+            $newConfig = new ProviderConfig($provider, $apiKey, $baseUrl, $model);
+        } catch (LinguaFlowAI\Provider\ProviderException $e) {
+            return [$e->getMessage()];
         }
+        $previousUrl = rtrim(trim((string) Settings::get(Settings::BASE_URL)), '/');
+        if ($previousUrl === '') { $previousUrl = ProviderConfig::DEFAULTS[$previousProvider]['base_url'] ?? ''; }
+        $endpointChanged = $previousProvider !== $provider || $previousUrl !== $newConfig->baseUrl;
+        $savedKey = $apiKey !== '' ? $apiKey : (($endpointChanged || Tools::getValue('LFAI_API_KEY_CLEAR')) ? '' : (string) Settings::get(Settings::API_KEY));
+        try {
+            new ProviderConfig($provider, $savedKey, $baseUrl, $model);
+        } catch (LinguaFlowAI\Provider\ProviderException $e) {
+            return [$e->getMessage()];
+        }
+        if ($newConfig->baseUrl === '') { $errors[] = $this->l('This provider needs a base URL.'); }
+        if (ProviderConfig::DEFAULTS[$provider]['needs_key'] && $savedKey === '' && !Tools::getValue('LFAI_API_KEY_CLEAR')) { $errors[] = $this->l('Enter a new key when changing the provider or URL.'); }
+        if (strlen($apiKey) > 8192 || strlen($baseUrl) > 2048 || mb_strlen($model) > 128) { $errors[] = $this->l('Provider settings are too long.'); }
+        $shopScope = (string) Tools::getValue('LFAI_SHOP_SCOPE', ShopScope::CONTEXT);
+        if (!in_array($shopScope, [ShopScope::CONTEXT, ShopScope::ALL], true)) { $errors[] = $this->l('Invalid shop scope.'); }
 
         $source = (int) Tools::getValue('LFAI_SOURCE_LANG');
+        if ($source < 1 || !Language::getLanguage($source)) { $errors[] = $this->l('Invalid source language.'); }
         $targets = array_values(array_diff(array_map('intval', (array) Tools::getValue('LFAI_TARGET_LANGS', [])), [$source]));
         $fields = array_values(array_intersect((array) Tools::getValue('LFAI_FIELDS', []), array_keys(Settings::PRODUCT_FIELDS)));
         if ($fields === []) {
@@ -302,6 +323,32 @@ class LinguaFlowAI extends Module
         }
         $effort = (string) Tools::getValue('LFAI_EFFORT');
 
+        $patterns = [];
+        foreach (preg_split('/[\r\n]+/', (string) Tools::getValue('LFAI_PROTECTED_PATTERNS')) as $pattern) {
+            $pattern = trim($pattern);
+            if ($pattern === '') {
+                continue;
+            }
+            if (strlen($pattern) <= 2000 && count($patterns) < 100 && LinguaFlowAI\Translation\ProtectedTerms::isValidPattern($pattern)) {
+                $patterns[] = $pattern;
+            } else {
+                $errors[] = $this->l('A protected pattern is invalid or exceeds the allowed size/count.');
+            }
+        }
+
+        $styles = [];
+        foreach ((array) Tools::getValue('LFAI_LANG_STYLES', []) as $code => $style) {
+            $style = trim(mb_substr((string) $style, 0, 2000));
+            if ($style !== '' && preg_match('/^[A-Z]{2}$/', (string) $code)) {
+                $styles[$code] = $style;
+            }
+        }
+
+        if ($errors) { return $errors; }
+        Settings::set(Settings::API_KEY, $savedKey);
+        Settings::set(Settings::SHOP_SCOPE, $shopScope);
+        Settings::set(Settings::PROTECTED_PATTERNS, implode("\n", $patterns));
+        Settings::set(Settings::LANG_STYLES, json_encode($styles, JSON_UNESCAPED_UNICODE));
         Settings::set(Settings::PROVIDER, $provider);
         Settings::set(Settings::BASE_URL, $baseUrl);
         Settings::set(Settings::MODEL, $model);
@@ -323,29 +370,6 @@ class LinguaFlowAI extends Module
         Settings::set(Settings::PROTECT_MANUFACTURERS, (int) (bool) Tools::getValue('LFAI_PROTECT_MANUFACTURERS'));
         Settings::set(Settings::CONTEXT_SIZE, max(0, min(1048576, (int) Tools::getValue('LFAI_CONTEXT_SIZE'))));
         Settings::set(Settings::DISABLE_THINKING, (int) (bool) Tools::getValue('LFAI_DISABLE_THINKING'));
-
-        $patterns = [];
-        foreach (preg_split('/[\r\n]+/', (string) Tools::getValue('LFAI_PROTECTED_PATTERNS')) as $pattern) {
-            $pattern = trim($pattern);
-            if ($pattern === '') {
-                continue;
-            }
-            if (LinguaFlowAI\Translation\ProtectedTerms::isValidPattern($pattern)) {
-                $patterns[] = $pattern;
-            } else {
-                $errors[] = sprintf($this->l('Invalid protected pattern ignored: %s'), $pattern);
-            }
-        }
-        Settings::set(Settings::PROTECTED_PATTERNS, implode("\n", $patterns));
-
-        $styles = [];
-        foreach ((array) Tools::getValue('LFAI_LANG_STYLES', []) as $code => $style) {
-            $style = trim(mb_substr((string) $style, 0, 2000));
-            if ($style !== '' && preg_match('/^[A-Z]{2}$/', (string) $code)) {
-                $styles[$code] = $style;
-            }
-        }
-        Settings::set(Settings::LANG_STYLES, json_encode($styles, JSON_UNESCAPED_UNICODE));
 
         if (Tools::getValue('LFAI_REGENERATE_TOKEN')) {
             Settings::set(Settings::CRON_TOKEN, bin2hex(random_bytes(16)));

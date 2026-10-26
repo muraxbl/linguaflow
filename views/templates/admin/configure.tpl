@@ -50,7 +50,7 @@
             <button type="button" class="btn btn-default" id="lfai-load-models"><i class="icon-refresh"></i> {l s='Load models' mod='linguaflowai'}</button>
           </span>
         </div>
-        <p class="help-block" id="lfai-models-status">{l s='Click "Load models" to read the list from the provider. If it cannot be listed, type the model name.' mod='linguaflowai'}</p>
+        <p class="help-block" id="lfai-models-status">{l s='Save the provider and URL before loading models. You can choose the model after saving.' mod='linguaflowai'}</p>
       </div>
     </div>
 
@@ -177,6 +177,17 @@
 
   <div class="panel">
     <div class="panel-heading"><i class="icon-time"></i> {l s='Automation and batches' mod='linguaflowai'}</div>
+
+    <div class="form-group">
+      <label class="control-label col-lg-3" for="LFAI_SHOP_SCOPE">{l s='Shops' mod='linguaflowai'}</label>
+      <div class="col-lg-6">
+        <select name="LFAI_SHOP_SCOPE" id="LFAI_SHOP_SCOPE" class="form-control">
+          <option value="context" {if $lfai_shop_scope == 'context'}selected{/if}>{l s='Current shop context' mod='linguaflowai'}</option>
+          <option value="all" {if $lfai_shop_scope == 'all'}selected{/if}>{l s='All authorized shops (both shops when there are two)' mod='linguaflowai'}</option>
+        </select>
+        <p class="help-block">{l s='Default for automatic translations and product list bulk actions. Manual jobs and the product panel can override it. Each shop is translated separately.' mod='linguaflowai'}</p>
+      </div>
+    </div>
 
     <div class="form-group">
       <label class="control-label col-lg-3">{l s='New products' mod='linguaflowai'}</label>

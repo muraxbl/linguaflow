@@ -139,9 +139,7 @@ class SegmentTranslator
                 self::ATTEMPT_TEMPERATURES[min($attempt - 1 + $tempOffset, count(self::ATTEMPT_TEMPERATURES) - 1)]
             ));
             try {
-                if ($tags) {
-                    Html::validateMarkers($raw, $tags);
-                }
+                Html::validateMarkers($raw, $tags);
                 $lastOutput = Html::restoreMarkers($raw, $tags);
                 QualityCheck::check($core, $lastOutput, $job['field'], $keepTerms);
                 // Glossary misses are worth another try, but never block: the review flags what remains.

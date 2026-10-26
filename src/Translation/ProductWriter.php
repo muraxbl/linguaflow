@@ -8,9 +8,11 @@
 namespace LinguaFlowAI\Translation;
 
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Security\ProductContent;
+use LinguaFlowAI\Security\ShopContext;
 
 /**
- * Writes translated fields to product_lang, in every shop the product belongs to.
+ * Writes translated fields only to the job's shop.
  */
 class ProductWriter
 {
@@ -18,10 +20,6 @@ class ProductWriter
     {
         $row = \Db::getInstance()->getRow('SELECT * FROM `' . _DB_PREFIX_ . 'product_lang`
             WHERE id_product = ' . $idProduct . ' AND id_lang = ' . $idLang . ' AND id_shop = ' . $idShop, false);
-        if (!$row && $idShop !== (int) \Configuration::get('PS_SHOP_DEFAULT')) {
-            return self::loadLangRow($idProduct, $idLang, (int) \Configuration::get('PS_SHOP_DEFAULT'));
-        }
-
         return $row ?: null;
     }
 
@@ -31,10 +29,24 @@ class ProductWriter
      */
     public function write(int $idProduct, int $idSourceLang, int $idTargetLang, int $idShop, array $outputs, array $options): void
     {
+        ShopContext::run($idShop, function () use ($idProduct, $idSourceLang, $idTargetLang, $idShop, $outputs, $options) {
+            $this->writeInShop($idProduct, $idSourceLang, $idTargetLang, $idShop, $outputs, $options);
+        });
+    }
+
+    private function writeInShop(int $idProduct, int $idSourceLang, int $idTargetLang, int $idShop, array $outputs, array $options): void
+    {
+        $db = \Db::getInstance();
+        if ($idShop < 1 || $idProduct < 1 || $idTargetLang < 1 || $idSourceLang === $idTargetLang
+            || !$db->getValue('SELECT 1 FROM `' . _DB_PREFIX_ . 'product_shop` WHERE id_product = ' . $idProduct . ' AND id_shop = ' . $idShop)
+            || !$db->getValue('SELECT 1 FROM `' . _DB_PREFIX_ . 'lang_shop` WHERE id_lang = ' . $idTargetLang . ' AND id_shop = ' . $idShop)) {
+            throw new \DomainException('The product and target language must belong to the job shop, and the source language cannot be overwritten.');
+        }
         $update = [];
         foreach ($outputs as $field => $value) {
             if (isset(Settings::PRODUCT_FIELDS[$field])) {
                 $max = Settings::PRODUCT_FIELDS[$field];
+                $value = ProductContent::sanitize($field, (string) $value);
                 $update[$field] = pSQL($max > 0 ? mb_substr($value, 0, $max) : $value, true);
             }
         }
@@ -55,15 +67,11 @@ class ProductWriter
             }
         }
 
-        $db = \Db::getInstance();
-        $shopIds = array_map('intval', array_column($db->executeS('SELECT id_shop FROM `' . _DB_PREFIX_ . 'product_shop` WHERE id_product = ' . $idProduct) ?: [], 'id_shop'));
-        foreach ($shopIds as $shop) {
-            $where = 'id_product = ' . $idProduct . ' AND id_lang = ' . $idTargetLang . ' AND id_shop = ' . $shop;
-            if ((int) $db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'product_lang` WHERE ' . $where)) {
-                $db->update('product_lang', $update, $where);
-            } else {
-                $db->insert('product_lang', array_merge($update, ['id_product' => $idProduct, 'id_lang' => $idTargetLang, 'id_shop' => $shop]));
-            }
+        $where = 'id_product = ' . $idProduct . ' AND id_lang = ' . $idTargetLang . ' AND id_shop = ' . $idShop;
+        if ((int) $db->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'product_lang` WHERE ' . $where)) {
+            $db->update('product_lang', $update, $where);
+        } else {
+            $db->insert('product_lang', array_merge($update, ['id_product' => $idProduct, 'id_lang' => $idTargetLang, 'id_shop' => $idShop]));
         }
 
         $db->update('product', ['date_upd' => date('Y-m-d H:i:s')], 'id_product = ' . $idProduct);

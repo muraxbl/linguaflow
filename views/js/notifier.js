@@ -63,10 +63,16 @@
 
   /* ---------------------------------------------------------------- toasts */
 
+  function escapeHtml(value) {
+    var node = document.createElement('span');
+    node.textContent = String(value);
+    return node.innerHTML;
+  }
+
   function toast(title, message, type) {
     if (window.jQuery && window.jQuery.growl) {
       var fn = type === 'warning' ? 'warning' : (type === 'error' ? 'error' : 'notice');
-      window.jQuery.growl[fn]({ title: title, message: message, duration: 10000 });
+      window.jQuery.growl[fn]({ title: escapeHtml(title), message: escapeHtml(message), duration: 10000 });
       return;
     }
     var el = document.createElement('div');
@@ -211,6 +217,7 @@
     post(panel.getAttribute('data-url'), {
       id_product: panel.getAttribute('data-id-product'),
       overwrite: panel.querySelector('.lfai-overwrite').checked ? 1 : 0,
+      shop_scope: panel.querySelector('.lfai-shop-scope').value,
       langs: langs
     }).then(function (r) {
       button.disabled = false;
@@ -266,7 +273,7 @@
           toast('LinguaFlow AI', cfg.i18n.noSelection, 'warning');
           return;
         }
-        post(cfg.enqueueUrl, { products: ids }).then(function (r) {
+        post(cfg.enqueueUrl, { products: ids, shop_scope: cfg.shopScope }).then(function (r) {
           toast('LinguaFlow AI', r.ok ? r.message : r.error, r.ok ? 'success' : 'error');
           if (r.ok) { poll(); }
         });

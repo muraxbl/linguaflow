@@ -24,6 +24,13 @@
       </p>
 
       <div class="form-group">
+        <label>{l s='Shops' mod='linguaflowai'}</label>
+        <select name="shop_scope" class="form-control">
+          <option value="context" {if $lfai_shop_scope == 'context'}selected{/if}>{l s='Current shop context' mod='linguaflowai'}</option>
+          <option value="all" {if $lfai_shop_scope == 'all'}selected{/if}>{l s='All authorized shops (both shops when there are two)' mod='linguaflowai'}</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>{l s='Products' mod='linguaflowai'}</label>
         <div class="radio"><label><input type="radio" name="lfai_scope" value="missing" checked> {l s='Products not translated yet (empty or identical to the source)' mod='linguaflowai'}</label></div>
         <div class="radio"><label><input type="radio" name="lfai_scope" value="category"> {l s='Products in a category' mod='linguaflowai'}</label></div>
@@ -87,6 +94,7 @@
               <td>{$job.id_job|intval}</td>
               <td>
                 {$job.label|escape:'htmlall':'UTF-8'}<br>
+                <small>{l s='Shop' mod='linguaflowai'} #{$job.id_shop|intval}</small><br>
                 <small class="text-muted">{$job.type|escape:'htmlall':'UTF-8'} · {$job.date_add|escape:'htmlall':'UTF-8'}</small>
               </td>
               <td style="min-width:160px">

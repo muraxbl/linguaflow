@@ -146,6 +146,9 @@ final class Html
      */
     public static function validateMarkers(string $text, array $tags): void
     {
+        if (preg_match(self::ANY_TAG_RE, preg_replace('/<\/?t\d+\/?>/', '', $text))) {
+            throw new RetryException('the model added HTML that did not exist');
+        }
         foreach ($tags as $t) {
             $count = substr_count($text, $t['marker']);
             if ($count !== 1) {

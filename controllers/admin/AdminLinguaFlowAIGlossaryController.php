@@ -6,6 +6,7 @@
  */
 
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Security\AdminAccess;
 use LinguaFlowAI\Translation\GlossaryMatcher;
 use LinguaFlowAI\Translation\GlossaryRepository;
 use LinguaFlowAI\Translation\LanguageInfo;
@@ -31,6 +32,10 @@ class AdminLinguaFlowAIGlossaryController extends ModuleAdminController
 
     public function initContent()
     {
+        if (!AdminAccess::allows($this, 'view', false, true)) {
+            http_response_code(403);
+            return;
+        }
         if (Tools::getValue('export') === 'glossary') {
             $this->download('glossary.json', (new GlossaryRepository())->all());
         }
@@ -70,6 +75,26 @@ class AdminLinguaFlowAIGlossaryController extends ModuleAdminController
     }
 
     public function postProcess()
+    {
+        // Glossary and memory are shared configuration; require configuration privileges.
+        $mutation = false;
+        $permission = 'view';
+        foreach (['submitLfaiTerm' => 'edit', 'submitLfaiDeleteTerm' => 'delete', 'submitLfaiImportGlossary' => 'edit', 'submitLfaiImportTm' => 'edit', 'submitLfaiPurgeTm' => 'delete', 'submitLfaiCategoryHint' => 'edit'] as $submit => $needed) {
+            if (Tools::isSubmit($submit)) {
+                $mutation = true;
+                $permission = $needed;
+                break;
+            }
+        }
+        if (!AdminAccess::allows($this, $permission, false, true) || ($mutation && !AdminAccess::isPost())) {
+            http_response_code(403);
+            $this->errors[] = 'Access denied. Configuration privileges and a valid POST token are required.';
+            return false;
+        }
+        return $this->processAuthorizedRequest();
+    }
+
+    private function processAuthorizedRequest()
     {
         $glossary = new GlossaryRepository();
 
@@ -180,6 +205,7 @@ class AdminLinguaFlowAIGlossaryController extends ModuleAdminController
     private function download(string $filename, array $data): void
     {
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
         echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;

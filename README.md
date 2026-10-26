@@ -78,7 +78,18 @@ Se puede elegir qué campos traducir: nombre, resumen, descripción, meta title,
 - **Marcas protegidas** (y el fabricante de cada producto) y **códigos protegidos** por expresión regular (IP65, E27, GU10, SMD 2835…): nunca se traducen y se comprueba que aparezcan en la traducción.
 - **Ollama**: desactivar el razonamiento previo (`think=false`) de modelos como Gemma 4 o Qwen 3 y fijar `num_ctx`.
 
-El HTML de las descripciones se conserva. La traducción se escribe en todas las tiendas a las que pertenece el producto, se reindexa la búsqueda y se lanza `actionProductUpdate` para que otros módulos se enteren.
+El HTML permitido de las descripciones se conserva y se sanea antes de guardar. Se reindexa la búsqueda y se lanza `actionProductUpdate` dentro del contexto de la tienda traducida.
+
+### Multitienda
+
+En la configuración se elige el alcance predeterminado:
+
+- **Current shop context**: actúa solo en la tienda seleccionada en el selector de PrestaShop. Es el valor predeterminado de la versión 1.2.0. Si el selector está en un grupo o en todas las tiendas, selecciona una tienda concreta o elige el alcance siguiente.
+- **All authorized shops (both shops when there are two)**: actúa en ambas tiendas cuando hay dos, siempre dentro de los permisos del empleado y de las asociaciones del producto.
+
+El formulario de traducción masiva y el panel del producto permiten cambiar ese alcance para cada operación. La acción masiva del listado y los productos nuevos usan el valor de configuración.
+
+Cada tienda tiene su propio trabajo y se traduce a partir de sus propios textos. No se copia la traducción de una tienda a la otra. La cola, la revisión y los avisos solo muestran trabajos de tiendas autorizadas; una tarea pendiente en una tienda no bloquea la traducción del mismo producto e idioma en otra. La memoria, el glosario y la configuración del proveedor siguen siendo globales.
 
 ## Procesamiento de la cola
 
@@ -100,6 +111,8 @@ Requisitos: PrestaShop 1.7.6 o superior, PHP 7.2 o superior y las extensiones cU
 ```
 
 Después: *Módulos › Gestor de módulos › Subir un módulo* → `linguaflowai.zip`.
+
+El empaquetado requiere Git y toma únicamente archivos de ejecución versionados. Si estás desarrollando, añade los nuevos archivos al índice antes de generar el ZIP. Los archivos locales sin seguimiento, los tests y los metadatos del repositorio quedan fuera.
 
 > El zip que genera GitHub ("Download ZIP") **no sirve**: contiene la carpeta `linguaflow-main/` y PrestaShop exige que el zip tenga dentro una carpeta llamada exactamente `linguaflowai/`. Usa `build.sh`. También se puede copiar el repositorio en `modules/linguaflowai` (la carpeta debe llamarse así). `vendor/` solo contiene el autoloader de Composer y se incluye en el repositorio, así que no hace falta ejecutar Composer.
 
@@ -125,4 +138,8 @@ views/js/notifier.js                   Toasts, notificaciones nativas, progreso,
 
 ## Seguridad
 
-La API key se guarda en la tabla de configuración de PrestaShop y nunca se vuelve a mostrar en el formulario. Al cambiar de proveedor sin introducir una clave nueva, la anterior se borra.
+La API key se guarda en la tabla de configuración de PrestaShop y nunca se vuelve a mostrar en el formulario. Al cambiar de proveedor **o de URL** sin introducir una clave nueva, la anterior se borra. Los proveedores cloud usan sus endpoints oficiales. Para servidores propios se selecciona OpenAI compatible, Ollama local u Open WebUI; hay que guardar el proveedor y la URL antes de cargar los modelos. Las claves requieren HTTPS salvo para servicios en loopback (`localhost`, `127.0.0.1`, `::1`).
+
+Las acciones comprueban sesión, token y permisos antes de modificar datos. Traducir requiere también permiso para editar productos. Como el proveedor, el glosario y la memoria son globales, su administración requiere permiso de configuración del módulo y acceso a todas las tiendas. Las descripciones se sanean con HTMLPurifier, incluido en PrestaShop, aunque el saneador general de la tienda esté desactivado. No se permiten scripts, manejadores de eventos, iframes ni estilos en esas traducciones.
+
+Los detalles y las pruebas están en [SECURITY.md](SECURITY.md). La revisión del código y del historial no detectó credenciales incrustadas; el correo del autor sigue formando parte de los metadatos de los commits.

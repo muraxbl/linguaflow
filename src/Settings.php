@@ -33,6 +33,7 @@ final class Settings
     public const BO_WORKER = 'LFAI_BO_WORKER';
     public const BATCH_SIZE = 'LFAI_BATCH_SIZE';
     public const CRON_TOKEN = 'LFAI_CRON_TOKEN';
+    public const SHOP_SCOPE = 'LFAI_SHOP_SCOPE';
     public const LANG_STYLES = 'LFAI_LANG_STYLES';
     public const CATEGORY_HINTS = 'LFAI_CATEGORY_HINTS';
     public const PROTECTED_PATTERNS = 'LFAI_PROTECTED_PATTERNS';
@@ -80,6 +81,7 @@ final class Settings
             self::BO_WORKER => 1,
             self::BATCH_SIZE => 5,
             self::CRON_TOKEN => bin2hex(random_bytes(16)),
+            self::SHOP_SCOPE => 'context',
             self::LANG_STYLES => json_encode(LanguageInfo::DEFAULT_STYLES),
             self::CATEGORY_HINTS => '{}',
             self::PROTECTED_PATTERNS => self::DEFAULT_PROTECTED_PATTERNS,

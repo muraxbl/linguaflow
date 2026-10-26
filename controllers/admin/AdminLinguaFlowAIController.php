@@ -11,6 +11,8 @@ use LinguaFlowAI\Provider\ProviderFactory;
 use LinguaFlowAI\Queue\JobRepository;
 use LinguaFlowAI\Queue\Worker;
 use LinguaFlowAI\Settings;
+use LinguaFlowAI\Security\AdminAccess;
+use LinguaFlowAI\Security\ShopScope;
 use LinguaFlowAI\Translation\ProductTranslationService;
 use LinguaFlowAI\Translation\ProductWriter;
 use LinguaFlowAI\Translation\TranslationMemory;
@@ -42,7 +44,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
 
             return;
         }
-        $jobs = new JobRepository();
+        $jobs = $this->jobs();
         $viewJob = (int) Tools::getValue('view_job');
         $jobList = $jobs->listJobs();
         $active = [];
@@ -60,6 +62,8 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         $this->context->smarty->assign([
             'lfai_url' => $this->context->link->getAdminLink($this->controller_name),
             'lfai_jobs' => $jobList,
+            'lfai_shop_scope' => (string) Settings::get(Settings::SHOP_SCOPE),
+            'lfai_shops' => Shop::getShops(true),
             'lfai_view_job' => $viewJob ? $jobs->getJob($viewJob) : null,
             'lfai_failed_items' => $viewJob ? $jobs->failedItems($viewJob) : [],
             'lfai_languages' => $this->module->targetLanguageChoices(),
@@ -77,9 +81,64 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         $this->context->smarty->assign('content', $this->content);
     }
 
+    private function jobs(): JobRepository
+    {
+        return new JobRepository(null, ShopScope::authorizedIds());
+    }
+
     public function postProcess()
     {
-        $jobs = new JobRepository();
+        $permission = 'view';
+        $products = false;
+        $configure = false;
+        $mutating = false;
+        if ($this->ajax) {
+            $actions = ['status' => 'view', 'tick' => 'edit', 'listmodels' => 'edit', 'enqueueproduct' => 'add', 'enqueueproducts' => 'add'];
+            $action = strtolower((string) Tools::getValue('action'));
+            if (!isset($actions[$action])) {
+                http_response_code(400);
+                $this->json(['ok' => false, 'error' => 'Unknown action.']);
+            }
+            $permission = $actions[$action];
+            $products = in_array($action, ['tick', 'enqueueproduct', 'enqueueproducts'], true);
+            $configure = $action === 'listmodels';
+            $mutating = true; // status also acknowledges completed notices.
+        } else {
+            foreach (['submitLfaiCreateJob' => 'add', 'submitLfaiCancel' => 'edit', 'submitLfaiRetry' => 'edit', 'submitLfaiDelete' => 'delete', 'submitLfaiApprove' => 'edit', 'submitLfaiRegenerate' => 'edit', 'submitLfaiReject' => 'edit'] as $submit => $needed) {
+                if (Tools::isSubmit($submit)) {
+                    $permission = $needed;
+                    $products = true;
+                    $mutating = true;
+                    break;
+                }
+            }
+        }
+        if (!AdminAccess::allows($this, $permission, $products, $configure) || ($mutating && !AdminAccess::isPost())) {
+            http_response_code(403);
+            if ($this->ajax) {
+                $this->json(['ok' => false, 'error' => 'Access denied. Use POST with a valid token and the required permissions.']);
+            }
+            $this->errors[] = 'Access denied. Use POST with a valid token and the required permissions.';
+            return false;
+        }
+        try {
+            return $this->processAuthorizedRequest();
+        } catch (DomainException | ProviderException $e) {
+            http_response_code(403);
+            if ($this->ajax) {
+                $this->json(['ok' => false, 'error' => $e->getMessage()]);
+            }
+            $this->errors[] = $e->getMessage();
+            return false;
+        }
+    }
+
+    private function processAuthorizedRequest()
+    {
+        if ($this->ajax) {
+            return parent::postProcess();
+        }
+        $jobs = $this->jobs();
         $idJob = (int) Tools::getValue('id_job');
 
         if (Tools::isSubmit('submitLfaiCreateJob')) {
@@ -112,13 +171,13 @@ class AdminLinguaFlowAIController extends ModuleAdminController
 
     private function renderReview(): void
     {
-        $jobs = new JobRepository();
+        $jobs = $this->jobs();
         $page = max(1, (int) Tools::getValue('page'));
         $total = $jobs->countReview();
         $items = $jobs->reviewItems(self::REVIEW_PAGE_SIZE, ($page - 1) * self::REVIEW_PAGE_SIZE);
         $labels = $this->module->fieldLabels();
         foreach ($items as &$item) {
-            $product = new Product((int) $item['id_product'], false, (int) $this->context->language->id);
+            $product = new Product((int) $item['id_product'], false, (int) $this->context->language->id, (int) $item['id_shop']);
             $item['product_name'] = $product->name;
             $item['product_url'] = $this->context->link->getAdminLink('AdminProducts', true, ['id_product' => (int) $item['id_product']], ['id_product' => (int) $item['id_product'], 'updateproduct' => 1]);
             foreach ($item['payload']['fields'] ?? [] as $field => &$data) {
@@ -145,7 +204,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
      */
     private function approveReviewItem(int $idItem): void
     {
-        $jobs = new JobRepository();
+        $jobs = $this->jobs();
         $item = $jobs->getItem($idItem);
         if (!$item || $item['status'] !== JobRepository::ITEM_REVIEW) {
             $this->errors[] = $this->module->l('This translation is no longer waiting for review.', 'adminlinguaflowaicontroller');
@@ -166,7 +225,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
             (int) $item['id_product'],
             $idSourceLang,
             (int) $item['id_lang'],
-            (int) ($item['payload']['id_shop'] ?? $this->context->shop->id),
+            (int) $job['id_shop'],
             $outputs,
             $job['options'] ?? []
         );
@@ -192,40 +251,27 @@ class AdminLinguaFlowAIController extends ModuleAdminController
             return;
         }
 
-        $scope = (string) Tools::getValue('lfai_scope');
-        $productIds = $this->resolveProducts($scope, $langIds);
-        if ($productIds === []) {
-            $this->errors[] = $this->module->l('No product matches the selection.', 'adminlinguaflowaicontroller');
-
-            return;
-        }
-
         $options = $this->module->defaultJobOptions();
         $options['overwrite'] = (bool) Tools::getValue('lfai_overwrite');
-        $label = trim((string) Tools::getValue('lfai_label')) ?: sprintf($this->module->l('Mass translation (%d products)', 'adminlinguaflowaicontroller'), count($productIds));
-
-        $idJob = (new JobRepository())->createJob(
-            JobRepository::TYPE_MANUAL,
-            $label,
-            $productIds,
-            $langIds,
-            $options,
-            (int) $this->context->employee->id,
-            (int) $this->context->shop->id
-        );
-        if ($idJob) {
-            $this->confirmations[] = sprintf($this->module->l('Job #%d created: it runs in the background in small batches.', 'adminlinguaflowaicontroller'), $idJob);
+        $count = 0;
+        foreach (ShopScope::targets((string) Tools::getValue('shop_scope', Settings::get(Settings::SHOP_SCOPE))) as $idShop) {
+            $productIds = $this->resolveProducts((string) Tools::getValue('lfai_scope'), $langIds, $idShop);
+            $label = trim((string) Tools::getValue('lfai_label')) ?: sprintf($this->module->l('Mass translation (%d products)', 'adminlinguaflowaicontroller'), count($productIds));
+            $id = $this->jobs()->createJob(JobRepository::TYPE_MANUAL, $label, $productIds, $langIds, $options, (int) $this->context->employee->id, $idShop);
+            if ($id) { ++$count; }
+        }
+        if ($count) {
+            $this->confirmations[] = sprintf($this->module->l('%d shop jobs created.', 'adminlinguaflowaicontroller'), $count);
         } else {
-            $this->errors[] = $this->module->l('Those products are already queued for these languages.', 'adminlinguaflowaicontroller');
+            $this->errors[] = $this->module->l('No matching products, or the selection is already queued.', 'adminlinguaflowaicontroller');
         }
     }
 
     /** @return int[] */
-    private function resolveProducts(string $scope, array $langIds): array
+    private function resolveProducts(string $scope, array $langIds, int $idShop): array
     {
         $db = Db::getInstance();
         $p = _DB_PREFIX_;
-        $idShop = (int) $this->context->shop->id;
         $activeOnly = Tools::getValue('lfai_active_only') ? ' AND ps.active = 1' : '';
 
         switch ($scope) {
@@ -285,7 +331,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
     /** Progress of running jobs + completed jobs this employee has not been notified about. */
     public function ajaxProcessStatus()
     {
-        $jobs = new JobRepository();
+        $jobs = $this->jobs();
         $this->json([
             'ok' => true,
             'due' => $jobs->countDue(),
@@ -304,7 +350,7 @@ class AdminLinguaFlowAIController extends ModuleAdminController
         }
         session_write_close();
         try {
-            $stats = (new Worker())->run((int) Settings::get(Settings::BATCH_SIZE), self::TICK_BUDGET);
+            $stats = (new Worker($this->jobs()))->run((int) Settings::get(Settings::BATCH_SIZE), self::TICK_BUDGET);
             $this->json(['ok' => true, 'stats' => $stats]);
         } catch (Throwable $e) {
             // Shown as a toast by the notifier: a silent failure looks like a queue that never moves.
@@ -316,14 +362,19 @@ class AdminLinguaFlowAIController extends ModuleAdminController
     /** Model list for the settings page. Uses the saved key when none is typed for the same provider. */
     public function ajaxProcessListModels()
     {
+        $saved = Settings::providerConfig();
         $provider = (string) Tools::getValue('provider');
+        $requested = new ProviderConfig($provider, '', (string) Tools::getValue('base_url'), '');
+        if ($provider !== $saved->provider || $requested->baseUrl !== $saved->baseUrl) {
+            throw new DomainException('Save the provider and its URL before loading models. Saved keys are only used with their saved endpoint.');
+        }
         $apiKey = trim((string) Tools::getValue('api_key'));
         if ($apiKey === '' && $provider === (string) Settings::get(Settings::PROVIDER)) {
             $apiKey = (string) Settings::get(Settings::API_KEY);
         }
 
         try {
-            $config = new ProviderConfig($provider, $apiKey, (string) Tools::getValue('base_url'), '', 'medium', 20);
+            $config = new ProviderConfig($provider, $apiKey, $saved->baseUrl, '', 'medium', 20);
             $models = ProviderFactory::create($config)->listModels();
             $this->json(['ok' => true, 'models' => $models]);
         } catch (ProviderException $e) {
@@ -337,56 +388,34 @@ class AdminLinguaFlowAIController extends ModuleAdminController
     public function ajaxProcessEnqueueProduct()
     {
         $idProduct = (int) Tools::getValue('id_product');
-        $langIds = array_values(array_diff(array_map('intval', (array) Tools::getValue('langs', [])), [Settings::sourceLanguageId()]));
-        if (!$idProduct || $langIds === []) {
-            $this->json(['ok' => false, 'error' => $this->module->l('Select at least one language.', 'adminlinguaflowaicontroller')]);
-        }
+        $langs = array_values(array_diff(array_map('intval', (array) Tools::getValue('langs', [])), [Settings::sourceLanguageId()]));
         $options = $this->module->defaultJobOptions();
         $options['overwrite'] = (bool) Tools::getValue('overwrite');
-        $product = new Product($idProduct, false, (int) $this->context->language->id);
-        $idJob = (new JobRepository())->createJob(
-            JobRepository::TYPE_MANUAL,
-            sprintf('#%d %s', $idProduct, $product->name),
-            [$idProduct],
-            $langIds,
-            $options,
-            (int) $this->context->employee->id,
-            (int) $this->context->shop->id
-        );
-        $this->json($idJob
-            ? ['ok' => true, 'id_job' => $idJob, 'message' => $this->module->l('Translation queued. You will be notified when it is done.', 'adminlinguaflowaicontroller')]
-            : ['ok' => false, 'error' => $this->module->l('This product is already queued for these languages.', 'adminlinguaflowaicontroller')]);
+        $this->enqueueSelection([$idProduct], $langs, $options, JobRepository::TYPE_MANUAL);
     }
 
-    /** Bulk action of the legacy product catalog (PrestaShop 1.7.x / 8.0), injected by notifier.js. */
     public function ajaxProcessEnqueueProducts()
     {
-        $productIds = array_values(array_filter(array_map('intval', (array) Tools::getValue('products', []))));
-        $langIds = Settings::targetLanguageIds();
-        if ($langIds === []) {
-            $this->json(['ok' => false, 'error' => $this->module->l('Enable at least one target language in the module settings first.', 'adminlinguaflowaicontroller')]);
-        }
-        if ($productIds === []) {
-            $this->json(['ok' => false, 'error' => $this->module->l('Select at least one product.', 'adminlinguaflowaicontroller')]);
-        }
+        $this->enqueueSelection((array) Tools::getValue('products', []), Settings::targetLanguageIds(), $this->module->defaultJobOptions(), JobRepository::TYPE_BULK);
+    }
 
-        $idJob = (new JobRepository())->createJob(
-            JobRepository::TYPE_BULK,
-            sprintf($this->module->l('Product list selection (%d products)', 'adminlinguaflowaicontroller'), count($productIds)),
-            $productIds,
-            $langIds,
-            $this->module->defaultJobOptions(),
-            (int) $this->context->employee->id,
-            (int) $this->context->shop->id
-        );
-        $this->json($idJob
-            ? ['ok' => true, 'id_job' => $idJob, 'message' => sprintf($this->module->l('Job #%d queued: %d products x %d languages. You will be notified when it is done.', 'adminlinguaflowaicontroller'), $idJob, count($productIds), count($langIds))]
-            : ['ok' => false, 'error' => $this->module->l('The selected products are already queued for these languages.', 'adminlinguaflowaicontroller')]);
+    private function enqueueSelection(array $productIds, array $langIds, array $options, string $type): void
+    {
+        $ids = [];
+        foreach (ShopScope::targets((string) Tools::getValue('shop_scope', Settings::get(Settings::SHOP_SCOPE))) as $idShop) {
+            $id = $this->jobs()->createJob($type, sprintf('Translation (%d selected products)', count($productIds)), $productIds, $langIds, $options, (int) $this->context->employee->id, $idShop);
+            if ($id) { $ids[] = $id; }
+        }
+        $this->json(['ok' => (bool) $ids, 'id_job' => $ids ? $ids[0] : 0, 'id_jobs' => $ids,
+            'message' => sprintf('%d shop jobs queued.', count($ids)),
+            'error' => $ids ? '' : 'Select products and languages belonging to the selected shops; they may already be queued.']);
     }
 
     private function json(array $data): void
     {
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        header('X-Content-Type-Options: nosniff');
         echo json_encode($data);
         exit;
     }

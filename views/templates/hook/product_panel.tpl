@@ -10,6 +10,11 @@
     </p>
   {/if}
   <p>{l s='Save the product first, then queue its translation:' mod='linguaflowai'}</p>
+  <label>{l s='Shops' mod='linguaflowai'}</label>
+  <select class="form-control lfai-shop-scope">
+    <option value="context" {if $lfai_shop_scope == 'context'}selected{/if}>{l s='Current shop context' mod='linguaflowai'}</option>
+    <option value="all" {if $lfai_shop_scope == 'all'}selected{/if}>{l s='All authorized shops (both shops when there are two)' mod='linguaflowai'}</option>
+  </select>
   {foreach from=$lfai_languages item=lang}
     <label class="lfai-lang">
       <input type="checkbox" class="lfai-lang-input" value="{$lang.id_lang|intval}" {if $lang.lfai_enabled}checked{/if}> {$lang.name|escape:'htmlall':'UTF-8'}

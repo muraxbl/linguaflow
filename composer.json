@@ -14,6 +14,9 @@
       "LinguaFlowAI\\": "src/"
     }
   },
+  "scripts": {
+    "test": "php tests/run.php"
+  },
   "config": {
     "prepend-autoloader": false,
     "optimize-autoloader": true

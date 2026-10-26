@@ -16,6 +16,7 @@
       <h4>
         <a href="{$item.product_url|escape:'htmlall':'UTF-8'}" target="_blank">#{$item.id_product|intval} {$item.product_name|escape:'htmlall':'UTF-8'}</a>
         → <span class="label label-info">{$item.lang_name|escape:'htmlall':'UTF-8'}</span>
+        <small>{l s='Shop' mod='linguaflowai'} #{$item.id_shop|intval}</small>
       </h4>
 
       {foreach from=$item.payload.fields key=field item=data}
